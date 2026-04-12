@@ -1,0 +1,371 @@
+rules:
+  # =========================================================================
+  # UserSpice-Aware Semgrep Rules (v3 — framework knowledge in rules, not baseline)
+  #
+  # Design principle: if the framework legitimately does something,
+  # handle it in rule design or path scoping, NOT in the baseline.
+  # The baseline should only hold genuine reviewed exceptions.
+  #
+  # Framework truths encoded here:
+  # - DB::query/insert/update/delete/get use parameterized queries (safe)
+  # - Input::get/sanitize applies htmlspecialchars (safe for HTML output)
+  # - safeReturn() is the HTML output escaper
+  # - Token::check() validates CSRF via $_POST['csrf'] (expected pattern)
+  # - password_verify() needs raw $_POST['password'] (expected pattern)
+  # - Hash::make is SHA256 for tokens, NOT password hashing
+  # - md5() in get_gravatar is for the Gravatar API (safe)
+  # =========================================================================
+
+  # ---- SQL Injection ----
+  # Scope: project code only. Framework core (users/classes/, users/helpers/,
+  # users/parsers/) does validated identifier assembly that Semgrep can't
+  # distinguish from real injection. Those paths are excluded via .semgrepignore.
+
+  - id: userspice-raw-query-concat
+    patterns:
+      - pattern-either:
+          - pattern: '$DB->query("..." . $INPUT . "...", ...)'
+          - pattern: '$DB->query("..." . $INPUT . "...")'
+          - pattern: '$DB->query("...$INPUT...", ...)'
+          - pattern: '$DB->query("...$INPUT...")'
+      # Safe: integer casts
+      - pattern-not: '$DB->query("..." . (int)$INPUT . "...", ...)'
+      - pattern-not: '$DB->query("..." . (int)$INPUT . "...")'
+      # Safe: preg_replace sanitized identifiers
+      - pattern-not: '$DB->query("..." . preg_replace(...) . "...", ...)'
+      - pattern-not: '$DB->query("..." . preg_replace(...) . "...")'
+      # Safe: implode of parameterized conditions
+      - pattern-not: '$DB->query("..." . implode(...) . "...", ...)'
+    message: >
+      SQL injection risk: string concatenation in DB::query().
+      Use parameterized queries: $db->query("SELECT * FROM t WHERE id = ?", [$id])
+      If the interpolated value is a validated column/table name, add a nosemgrep comment.
+    languages: [php]
+    severity: ERROR
+    metadata:
+      category: security
+      subcategory: sqli
+      cwe: "CWE-89"
+      confidence: HIGH
+      userspice: true
+
+  - id: userspice-raw-mysqli-query
+    patterns:
+      - pattern-either:
+          - pattern: 'mysqli_query($CONN, "..." . $INPUT . "...")'
+          - pattern: 'mysqli_query($CONN, "...$INPUT...")'
+    message: >
+      Direct mysqli_query with concatenation. Use the UserSpice DB class
+      parameterized queries instead: $db->query($sql, $params)
+    languages: [php]
+    severity: ERROR
+    metadata:
+      category: security
+      subcategory: sqli
+      cwe: "CWE-89"
+      userspice: true
+
+  # ---- XSS ----
+
+  - id: userspice-echo-raw-superglobal
+    patterns:
+      - pattern-either:
+          - pattern: echo $_GET[$KEY];
+          - pattern: echo $_POST[$KEY];
+          - pattern: echo $_REQUEST[$KEY];
+          - pattern: echo $_COOKIE[$KEY];
+          - pattern: print $_GET[$KEY];
+          - pattern: print $_POST[$KEY];
+          - pattern: print $_REQUEST[$KEY];
+    message: >
+      Direct output of superglobal without escaping. Use safeReturn() or
+      Input::get() which applies htmlspecialchars.
+    languages: [php]
+    severity: ERROR
+    metadata:
+      category: security
+      subcategory: xss
+      cwe: "CWE-79"
+      userspice: true
+
+  # Replaces the generic registry rule php.lang.security.injection.echoed-request.echoed-request
+  # which doesn't recognize UserSpice sanitizers. This version knows that safeReturn(),
+  # Input::get(), Input::sanitize(), htmlspecialchars(), json_encode(), and safeJsonEncodeForJs() are safe output.
+  - id: userspice-echoed-request
+    patterns:
+      - pattern-either:
+          - pattern: echo $EXPR;
+          - pattern: print $EXPR;
+      - metavariable-pattern:
+          metavariable: $EXPR
+          patterns:
+            - pattern-either:
+                - pattern: <... $_GET ...>
+                - pattern: <... $_POST ...>
+                - pattern: <... $_REQUEST ...>
+                - pattern: <... $_COOKIE ...>
+      # Exclude when the entire echo is wrapped in a safe function
+      - pattern-not: echo safeReturn(...);
+      - pattern-not: echo htmlspecialchars(...);
+      - pattern-not: echo htmlentities(...);
+      - pattern-not: echo Input::get(...);
+      - pattern-not: echo Input::sanitize(...);
+      - pattern-not: echo json_encode(...);
+      - pattern-not: echo safeJsonEncodeForJs(...);
+      - pattern-not: echo intval(...);
+      - pattern-not: echo (int)$X;
+      - pattern-not: print safeReturn(...);
+      - pattern-not: print htmlspecialchars(...);
+      - pattern-not: print json_encode(...);
+      - pattern-not: print safeJsonEncodeForJs(...);
+      - pattern-not: print Input::get(...);
+    message: >
+      Request data echoed without escaping. Wrap output in safeReturn(),
+      htmlspecialchars(), or use Input::get() for HTML-safe output.
+    languages: [php]
+    severity: WARNING
+    metadata:
+      category: security
+      subcategory: xss
+      cwe: "CWE-79"
+      userspice: true
+
+  # Note: echo $ROW->$FIELD rule removed in v2.
+  # Stored XSS from DB output is better caught by Psalm taint analysis.
+
+  # ---- Password Hashing ----
+
+  - id: userspice-md5-password-context
+    patterns:
+      - pattern-either:
+          - pattern: 'md5($_POST["password"])'
+          - pattern: "md5($_POST['password'])"
+          - pattern: 'md5($_POST["pass"])'
+          - pattern: "md5($_POST['pass'])"
+    message: >
+      md5() used in a password context. UserSpice uses
+      password_hash(PASSWORD_BCRYPT, cost=13). Use that instead.
+    languages: [php]
+    severity: ERROR
+    metadata:
+      category: security
+      subcategory: crypto
+      cwe: "CWE-327"
+      userspice: true
+
+  - id: userspice-sha1-password
+    patterns:
+      - pattern-either:
+          - pattern: 'sha1($_POST["password"])'
+          - pattern: "sha1($_POST['password'])"
+          - pattern: sha1($PASSWORD)
+    message: >
+      sha1() for password hashing is insecure. Use password_hash(PASSWORD_BCRYPT).
+    languages: [php]
+    severity: ERROR
+    metadata:
+      category: security
+      subcategory: crypto
+      cwe: "CWE-327"
+
+  # ---- Dangerous Functions ----
+
+  - id: userspice-eval-assert
+    pattern-either:
+      - pattern: eval($INPUT)
+      - pattern: assert($INPUT)
+    message: >
+      eval()/assert() with dynamic input enables code injection. Avoid entirely.
+    languages: [php]
+    severity: ERROR
+    metadata:
+      category: security
+      subcategory: code-injection
+      cwe: "CWE-94"
+
+  - id: userspice-unserialize
+    patterns:
+      - pattern: unserialize($INPUT)
+      - pattern-not: unserialize($INPUT, $OPTIONS)
+    message: >
+      unserialize() without allowed_classes can lead to object injection.
+      Use json_decode() or pass the allowed_classes option.
+    languages: [php]
+    severity: WARNING
+    metadata:
+      category: security
+      subcategory: deserialization
+      cwe: "CWE-502"
+
+  # ---- File Deletion with Tainted Path ----
+  # Replaces the generic "unlink-use" registry rule which fires on every
+  # unlink() call. This version only fires when the path includes user input.
+
+  - id: userspice-unlink-tainted-path
+    patterns:
+      - pattern-either:
+          - pattern: unlink($_GET[$KEY])
+          - pattern: unlink($_POST[$KEY])
+          - pattern: unlink($_REQUEST[$KEY])
+          - pattern: unlink("..." . $_GET[$KEY] . "...")
+          - pattern: unlink("..." . $_POST[$KEY] . "...")
+          - pattern: unlink("..." . $_REQUEST[$KEY] . "...")
+          - pattern: 'unlink("...$_GET[$KEY]...")'
+          - pattern: 'unlink("...$_POST[$KEY]...")'
+    message: >
+      File deletion with user-controlled path. Validate the path against
+      an allowlist or ensure it cannot escape intended directories.
+    languages: [php]
+    severity: ERROR
+    metadata:
+      category: security
+      subcategory: path-traversal
+      cwe: "CWE-22"
+      userspice: true
+
+  # ---- File Inclusion ----
+
+  - id: userspice-dynamic-include
+    patterns:
+      - pattern-either:
+          - pattern: include $_GET[$KEY]
+          - pattern: include($_GET[$KEY])
+          - pattern: require $_GET[$KEY]
+          - pattern: require($_GET[$KEY])
+          - pattern: include_once $_GET[$KEY]
+          - pattern: require_once $_GET[$KEY]
+          - pattern: include $_POST[$KEY]
+          - pattern: require $_POST[$KEY]
+          - pattern: include $_REQUEST[$KEY]
+          - pattern: require $_REQUEST[$KEY]
+    message: >
+      File inclusion with user input - Local/Remote File Inclusion vulnerability.
+      Validate against an allowlist of permitted file paths.
+    languages: [php]
+    severity: ERROR
+    metadata:
+      category: security
+      subcategory: lfi
+      cwe: "CWE-98"
+
+  # ---- Command Injection ----
+
+  - id: userspice-command-injection
+    patterns:
+      - pattern-either:
+          - pattern: 'exec("..." . $INPUT . "...")'
+          - pattern: 'exec("...$INPUT...")'
+          - pattern: 'system("..." . $INPUT . "...")'
+          - pattern: 'system("...$INPUT...")'
+          - pattern: 'passthru("..." . $INPUT . "...")'
+          - pattern: 'shell_exec("..." . $INPUT . "...")'
+          - pattern: 'popen("..." . $INPUT . "...", ...)'
+      - pattern-not: 'exec("..." . escapeshellarg($INPUT) . "...")'
+      - pattern-not: 'system("..." . escapeshellarg($INPUT) . "...")'
+    message: >
+      Shell command with unsanitized input. Use escapeshellarg() for arguments
+      or escapeshellcmd() for full commands, or avoid shell execution entirely.
+    languages: [php]
+    severity: ERROR
+    metadata:
+      category: security
+      subcategory: command-injection
+      cwe: "CWE-78"
+
+  # ---- Open Redirect ----
+
+  - id: userspice-open-redirect
+    patterns:
+      - pattern-either:
+          - pattern: 'header("Location: " . $_GET[$KEY])'
+          - pattern: 'header("Location: " . $_POST[$KEY])'
+          - pattern: 'header("Location: " . $_REQUEST[$KEY])'
+      - pattern-not-inside: Redirect::sanitized(...)
+    message: >
+      Unvalidated redirect with user input. Use Redirect::sanitized() or
+      sanitizedDest() which enforce same-origin and whitelist checks.
+    languages: [php]
+    severity: ERROR
+    metadata:
+      category: security
+      subcategory: open-redirect
+      cwe: "CWE-601"
+      userspice: true
+
+  # ---- Bypassing UserSpice Framework ----
+  # This rule recognizes the framework's own CSRF and password patterns
+  # so they don't fire. It only catches genuinely unhandled superglobal access.
+
+  - id: userspice-direct-superglobal-access
+    patterns:
+      - pattern-either:
+          - pattern: $X = $_GET[$KEY];
+          - pattern: $X = $_POST[$KEY];
+          - pattern: $X = $_REQUEST[$KEY];
+      # Framework pattern: CSRF token retrieval for Token::check()
+      - pattern-not: "$TOKEN = $_POST['csrf'];"
+      - pattern-not: '$TOKEN = $_POST["csrf"];'
+      # Framework pattern: raw password for password_verify()
+      - pattern-not: "$RAW = $_POST['password'];"
+      - pattern-not: '$RAW = $_POST["password"];'
+      # Sanitized access
+      - pattern-not: $X = Input::get($KEY);
+      - pattern-not: $X = Input::sanitize($_GET[$KEY]);
+      - pattern-not: $X = Input::sanitize($_POST[$KEY]);
+      - pattern-not: $X = htmlspecialchars($_GET[$KEY], ...);
+      - pattern-not: $X = htmlspecialchars($_POST[$KEY], ...);
+      - pattern-not: $X = filter_var($_GET[$KEY], ...);
+      - pattern-not: $X = filter_var($_POST[$KEY], ...);
+    message: >
+      Direct superglobal access bypasses Input::get()/Input::sanitize().
+      Use the UserSpice Input class for consistent sanitization.
+    languages: [php]
+    severity: WARNING
+    metadata:
+      category: security
+      subcategory: input-validation
+      cwe: "CWE-20"
+      userspice: true
+
+  # ---- JavaScript: DOM XSS ----
+
+  - id: userspice-js-innerhtml
+    pattern: $EL.innerHTML = $INPUT
+    message: >
+      Setting innerHTML with dynamic content. Use textContent for
+      text or sanitize HTML input first.
+    languages: [javascript, typescript]
+    severity: WARNING
+    metadata:
+      category: security
+      subcategory: xss
+      cwe: "CWE-79"
+
+  - id: userspice-js-document-write
+    pattern: document.write($INPUT)
+    message: >
+      document.write() with dynamic input is a DOM XSS risk.
+    languages: [javascript, typescript]
+    severity: WARNING
+    metadata:
+      category: security
+      subcategory: xss
+      cwe: "CWE-79"
+
+  - id: userspice-js-jquery-html
+    patterns:
+      - pattern-either:
+          - pattern: $($SEL).html($INPUT)
+          - pattern: $($SEL).append($INPUT)
+          - pattern: $($SEL).prepend($INPUT)
+      - pattern-not: '$($SEL).html("")'
+      - pattern-not: "$($SEL).html('')"
+    message: >
+      jQuery .html()/.append()/.prepend() with dynamic input can cause XSS.
+      Use .text() for text content or sanitize the HTML first.
+    languages: [javascript, typescript]
+    severity: WARNING
+    metadata:
+      category: security
+      subcategory: xss
+      cwe: "CWE-79"

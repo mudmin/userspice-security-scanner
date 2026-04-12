@@ -1,0 +1,23 @@
+# ---- User/project-specific data (DO NOT SHIP) ----
+
+# Scan reports (generated output)
+reports/*/
+!reports/.gitkeep
+
+# Per-project overrides (your project customizations)
+overrides/*/
+
+# Local configuration (created by setup.sh)
+scanner.conf
+
+# ---- Generated / temp ----
+tmp/
+*.tmp
+
+# OS files
+.DS_Store
+.claude
+Thumbs.db
+
+# Notes
+notes.txt

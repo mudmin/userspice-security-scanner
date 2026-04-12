@@ -1,0 +1,54 @@
+# UserSpice Shared Gitleaks Configuration
+# Extends the default gitleaks rules with allowlists for known-safe patterns.
+#
+# Docs: https://github.com/gitleaks/gitleaks#configuration
+
+title = "UserSpice Gitleaks Config"
+
+[allowlist]
+  description = "UserSpice global allowlist"
+
+  # Paths that should never trigger secrets findings
+  paths = [
+    '''vendor/''',
+    '''node_modules/''',
+    '''\.min\.js$''',
+    '''\.min\.css$''',
+    '''tests?/fixtures/''',
+    '''testdata/''',
+    # UserSpice font files and images
+    '''users/fonts/''',
+    '''users/images/''',
+    '''usersc/images/''',
+    # License files
+    '''users/licenses/''',
+    # CSS/JS assets (minified libraries etc)
+    '''users/css/''',
+    '''users/js/''',
+  ]
+
+  # Regex patterns for known-safe "secrets" that aren't actually secrets
+  regexes = [
+    # Gravatar md5 hashes (md5 of email per API spec — not a secret)
+    '''[a-f0-9]{32}''',
+
+    # Common placeholder/example values in config templates
+    '''(?i)(example|test|sample|placeholder|changeme|your[_-]?api[_-]?key)''',
+
+    # PHP session configuration directives (not actual secrets)
+    '''session\.(save_path|name|cookie)''',
+
+    # UserSpice TOTP key file reference (the file itself is gitignored)
+    '''TOTP_ENCRYPTION_KEY''',
+
+    # Hash::make output (sha256 hex strings used for tokens)
+    '''[a-f0-9]{64}''',
+
+    # init.example.php database config placeholders
+    '''db_(host|user|pass|name)''',
+  ]
+
+# Suppress false positives on UserSpice config examples and encryption constants.
+# These are added to the global allowlist above since gitleaks doesn't support
+# per-rule allowlist overrides without redefining the full rule regex.
+# The paths below are already covered by the global allowlist paths/regexes.

@@ -1,0 +1,22 @@
+# ZAP scan rules configuration
+# Format: <alert_id>	IGNORE|WARN|FAIL	<name>
+# Tab-separated. IGNORE suppresses the alert entirely.
+#
+# Fixed in UserSpice core:
+10054	IGNORE	Cookie without SameSite Attribute (fixed — SameSite=Lax set in session config)
+10044	IGNORE	Big Redirect Detected (fixed — Redirect::to() calls exit consistently)
+#
+# Docker/localhost noise (not present in production):
+2	IGNORE	Private IP Disclosure (Docker internal IPs in response, not real leak)
+10009	IGNORE	In Page Banner Information Leak (Apache default page version strings from Docker)
+10036	IGNORE	Server Leaks Version Information (local Apache config, not project code)
+10038	IGNORE	Content Security Policy Header Not Set (UserSpice has user-configurable CSP)
+10063	IGNORE	Permissions Policy Header Not Set (local Apache config, not project code)
+#
+# Benign informational:
+10027	IGNORE	Information Disclosure - Suspicious Comments (HTML/JS comments, not secrets)
+10109	IGNORE	Modern Web Application (ZAP detected JS frameworks — purely informational)
+10111	IGNORE	Authentication Request Identified (ZAP found login forms — expected)
+10112	IGNORE	Session Management Response Identified (ZAP detected session cookies — expected)
+10049	IGNORE	Non-Storable Content (pages set no-cache correctly)
+10050	IGNORE	Storable and Cacheable Content (static assets are cacheable — correct behavior)

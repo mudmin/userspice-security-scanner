@@ -1,0 +1,53 @@
+# UserSpice shared Semgrep ignores (v3 — framework truths in scoping, not baseline)
+#
+# Design: exclude paths where the framework legitimately does things that
+# generic rules would flag. This keeps the baseline small.
+
+# ---- Third-party code ----
+vendor/
+node_modules/
+bower_components/
+
+# Third-party libraries bundled in UserSpice
+users/classes/phpmailer/
+users/classes/PHPMailer/
+
+# Build artifacts
+dist/
+build/
+
+# ---- Test files ----
+tests/fixtures/
+test/fixtures/
+**/testdata/
+rate_limit_test.php
+test.php
+
+# ---- Static assets ----
+users/fonts/
+users/images/
+users/css/
+users/js/
+users/licenses/
+usersc/images/
+
+# ---- Language files (translation strings, not logic) ----
+usersc/lang/
+users/lang/
+
+# ---- Database migration/update scripts ----
+# These run once as admin with framework-validated identifiers. Low risk, high noise.
+users/updates/
+
+# ---- Patch directory (staging copy of users/ for updates) ----
+patch/
+
+# ---- Generated secrets (gitignored in production, framework-managed) ----
+usersc/vericode_secret.php
+
+# ---- Framework core ----
+# NOT excluded. These paths are actively developed and need scanning coverage.
+# Known-safe patterns (validated identifier assembly, CSRF token retrieval)
+# are handled via baselined entries for specific lines, not blanket excludes.
+# This ensures new code in users/classes/, users/helpers/, users/parsers/
+# still gets caught.

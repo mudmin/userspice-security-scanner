@@ -1,0 +1,219 @@
+#!/usr/bin/env bash
+# ============================================================================
+# UserSpice Security Scanner — Setup
+#
+# Interactive setup script. Run once after cloning:
+#   ./setup.sh
+#
+# Creates scanner.conf (gitignored) with your local configuration.
+# ============================================================================
+
+set -uo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+CONF_FILE="${SCRIPT_DIR}/scanner.conf"
+
+# Colors
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+CYAN='\033[0;36m'
+BOLD='\033[1m'
+NC='\033[0m'
+
+ok()   { echo -e "  ${GREEN}[OK]${NC} $*"; }
+warn() { echo -e "  ${YELLOW}[!]${NC} $*"; }
+fail() { echo -e "  ${RED}[X]${NC} $*"; }
+info() { echo -e "  ${BLUE}[i]${NC} $*"; }
+ask()  { echo -en "  ${CYAN}[?]${NC} $* "; }
+
+echo ""
+echo -e "${BOLD}${CYAN}UserSpice Security Scanner — Setup${NC}"
+echo -e "This will check your environment and create ${BOLD}scanner.conf${NC}"
+echo ""
+
+ERRORS=0
+WARNINGS=0
+
+# ---- Bash version ----
+echo -e "${BOLD}Checking prerequisites...${NC}"
+BASH_VER="${BASH_VERSINFO[0]}"
+if [[ "$BASH_VER" -ge 4 ]]; then
+    ok "Bash ${BASH_VERSION}"
+else
+    fail "Bash ${BASH_VERSION} — version 4+ required"
+    ((ERRORS++))
+fi
+
+# ---- Docker ----
+if command -v docker &>/dev/null; then
+    ok "Docker installed ($(docker --version | head -1 | sed 's/Docker version //' | cut -d, -f1))"
+else
+    fail "Docker not installed"
+    info "Install: curl -fsSL https://get.docker.com | sh"
+    ((ERRORS++))
+fi
+
+if docker info &>/dev/null 2>&1; then
+    ok "Docker daemon accessible"
+else
+    fail "Docker daemon not accessible for $(whoami)"
+    info "Fix: sudo usermod -aG docker $(whoami) && newgrp docker"
+    ((ERRORS++))
+fi
+
+# ---- jq ----
+if command -v jq &>/dev/null; then
+    ok "jq installed ($(jq --version 2>/dev/null))"
+else
+    fail "jq not installed"
+    info "Install: sudo apt-get install -y jq"
+    ((ERRORS++))
+fi
+
+# ---- curl ----
+if command -v curl &>/dev/null; then
+    ok "curl installed"
+else
+    fail "curl not installed"
+    info "Install: sudo apt-get install -y curl"
+    ((ERRORS++))
+fi
+
+# ---- PHP ----
+if command -v php &>/dev/null; then
+    PHP_VER=$(php -r 'echo PHP_MAJOR_VERSION;' 2>/dev/null)
+    PHP_FULL=$(php -r 'echo PHP_VERSION;' 2>/dev/null)
+    if [[ "$PHP_VER" -ge 8 ]]; then
+        ok "PHP ${PHP_FULL}"
+    else
+        warn "PHP ${PHP_FULL} — version 8.0+ required for the web UI"
+        info "The CLI scanner works without PHP"
+        ((WARNINGS++))
+    fi
+else
+    warn "PHP not found — web UI will not work"
+    info "The CLI scanner works without PHP"
+    ((WARNINGS++))
+fi
+
+# ---- Web server user + Docker ----
+WEB_USER=""
+if id -u www-data &>/dev/null 2>&1; then
+    WEB_USER="www-data"
+elif id -u apache &>/dev/null 2>&1; then
+    WEB_USER="apache"
+elif id -u nginx &>/dev/null 2>&1; then
+    WEB_USER="nginx"
+fi
+
+if [[ -n "$WEB_USER" ]]; then
+    if id -nG "$WEB_USER" 2>/dev/null | grep -qw docker; then
+        ok "Web server user '${WEB_USER}' is in docker group"
+    else
+        warn "Web server user '${WEB_USER}' is NOT in the docker group"
+        info "The web UI cannot trigger scans without this."
+        info "Fix: sudo usermod -aG docker ${WEB_USER} && sudo systemctl restart apache2"
+        ((WARNINGS++))
+    fi
+fi
+
+# ---- scan.sh executable ----
+if [[ -x "${SCRIPT_DIR}/scan.sh" ]]; then
+    ok "scan.sh is executable"
+else
+    warn "scan.sh is not executable"
+    chmod +x "${SCRIPT_DIR}/scan.sh" 2>/dev/null && ok "Fixed: made scan.sh executable" || {
+        fail "Could not make scan.sh executable"
+        info "Fix: chmod +x ${SCRIPT_DIR}/scan.sh"
+        ((ERRORS++))
+    }
+fi
+
+echo ""
+
+# ---- Stop if critical errors ----
+if [[ $ERRORS -gt 0 ]]; then
+    echo -e "${RED}${BOLD}${ERRORS} critical issue(s) found.${NC} Fix them and re-run setup."
+    echo ""
+    exit 1
+fi
+
+# ---- Configuration ----
+echo -e "${BOLD}Configuration${NC}"
+echo ""
+
+# Base scan directory
+DEFAULT_SCAN_DIR="/var/www/html"
+if [[ -f "$CONF_FILE" ]]; then
+    EXISTING_DIR=$(grep '^BASE_SCAN_DIR=' "$CONF_FILE" 2>/dev/null | cut -d= -f2-)
+    [[ -n "$EXISTING_DIR" ]] && DEFAULT_SCAN_DIR="$EXISTING_DIR"
+fi
+
+ask "Where are your UserSpice projects? [${DEFAULT_SCAN_DIR}]: "
+read -r SCAN_DIR
+SCAN_DIR="${SCAN_DIR:-$DEFAULT_SCAN_DIR}"
+
+# Validate
+if [[ ! -d "$SCAN_DIR" ]]; then
+    fail "Directory does not exist: ${SCAN_DIR}"
+    exit 1
+fi
+ok "Scan directory: ${SCAN_DIR}"
+
+# Check for UserSpice projects
+US_COUNT=$(find "$SCAN_DIR" -maxdepth 2 -name "z_us_root.php" 2>/dev/null | wc -l)
+if [[ $US_COUNT -gt 0 ]]; then
+    ok "Found ${US_COUNT} UserSpice project(s) in ${SCAN_DIR}"
+else
+    warn "No UserSpice projects found in ${SCAN_DIR}"
+    info "You can still scan non-UserSpice PHP projects"
+fi
+
+echo ""
+
+# ---- Write config ----
+cat > "$CONF_FILE" <<EOF
+# UserSpice Security Scanner — Local Configuration
+# Generated by setup.sh on $(date -u +%Y-%m-%dT%H:%M:%SZ)
+# This file is gitignored. Do not commit.
+
+# Base directory where your projects live.
+# scan.sh <project> will scan <BASE_SCAN_DIR>/<project>/
+BASE_SCAN_DIR=${SCAN_DIR}
+EOF
+
+ok "Configuration written to scanner.conf"
+
+# ---- Pull Docker images ----
+echo ""
+ask "Pull Docker images now? This downloads ~4GB. [y/N]: "
+read -r PULL_ANSWER
+if [[ "${PULL_ANSWER,,}" == "y" ]]; then
+    echo ""
+    echo -e "${BOLD}Pulling Docker images...${NC}"
+    source "${SCRIPT_DIR}/lib/common.sh"
+    for img in "$SEMGREP_IMAGE" "$PSALM_IMAGE" "$TRIVY_IMAGE" "$GITLEAKS_IMAGE" "$ZAP_IMAGE"; do
+        info "Pulling ${img}..."
+        docker pull "$img" 2>&1 | tail -1
+    done
+    ok "All images pulled"
+else
+    info "Skipped. Run ./scan.sh <project> --pull later to download images."
+fi
+
+# ---- Summary ----
+echo ""
+echo -e "${BOLD}${GREEN}Setup complete!${NC}"
+echo ""
+echo "  Quick start:"
+echo "    ./scan.sh <project>                          # Static scan"
+echo "    ./scan.sh <project> --url http://localhost/<project>/  # Full scan with ZAP"
+echo ""
+echo "  Web UI: http://localhost/$(basename "$SCRIPT_DIR")/ui/"
+echo ""
+if [[ $WARNINGS -gt 0 ]]; then
+    echo -e "  ${YELLOW}${WARNINGS} warning(s) — see above for optional fixes${NC}"
+    echo ""
+fi

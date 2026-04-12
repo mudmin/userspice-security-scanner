@@ -1,0 +1,13 @@
+# UserSpice Shared Trivy Ignores
+# Add CVE IDs or misconfig IDs that are reviewed and accepted across all projects.
+#
+# Format: one ID per line, optional comment with # after
+# Example:
+# CVE-2023-XXXXX   # accepted: only affects feature we don't use
+# AVD-DS-0002      # accepted: we intentionally run as root in dev containers
+
+# ---- Accepted Vulnerabilities ----
+# (none yet — add after first scan review)
+
+# ---- Accepted Misconfigurations ----
+# (none yet)

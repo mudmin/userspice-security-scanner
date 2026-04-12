@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+    UserSpice Shared Psalm Baseline
+
+    Issues listed here are acknowledged and suppressed across all projects.
+    Add entries here for known-safe patterns common to all UserSpice projects.
+
+    To generate a fresh baseline for a project:
+      psalm - -set-baseline=psalm-baseline.xml
+
+    Then merge relevant entries into this shared baseline.
+-->
+<files psalm-version="5.x">
+    <!-- Add suppressed issues here as they're reviewed -->
+    <!-- Example:
+    <file src="users/init.php">
+        <MixedAssignment>
+            <code><![CDATA[$someVar]]></code>
+        </MixedAssignment>
+    </file>
+    -->
+</files>

@@ -1,0 +1,116 @@
+# UserSpice Security Scanner — GitHub Actions
+#
+# Add this to .github/workflows/security.yml in your project repo.
+# Assumes the scanner is available (checked out or as a submodule).
+#
+# Three levels:
+#   s1: Fast syntax/lint check (~30s)
+#   s2: Full static analysis scan with threshold gate (~2 min)
+#   s3: Static + DAST + header validation (~10-20 min)
+
+name: Security Scan
+
+on:
+  pull_request:
+    branches: [main, master]
+  push:
+    tags: ['v*']
+
+env:
+  SCANNER_PATH: ./codetest  # Adjust to where scanner lives relative to project
+  PROJECT_NAME: ${{ github.event.repository.name }}
+
+jobs:
+  # ---- S1: Quick validation (runs on every PR) ----
+  s1-lint:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate scanner scripts
+        run: |
+          for f in ${SCANNER_PATH}/lib/*.sh ${SCANNER_PATH}/scan.sh; do
+            bash -n "$f" || exit 1
+          done
+          echo "All scripts pass syntax check"
+
+  # ---- S2: Static analysis (runs on every PR) ----
+  s2-scan:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    needs: s1-lint
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install jq
+        run: sudo apt-get install -y jq
+
+      - name: Run security scan (static)
+        run: |
+          ${SCANNER_PATH}/scan.sh ${PROJECT_NAME} \
+            --skip zap \
+            --sarif \
+            --threshold high
+
+      - name: Get report path
+        if: always()
+        run: |
+          REPORT=$(${SCANNER_PATH}/scan.sh --latest ${PROJECT_NAME})
+          echo "report_dir=${REPORT}" >> $GITHUB_ENV
+
+      - name: Upload SARIF to GitHub Code Scanning
+        if: always() && hashFiles(format('{0}/results.sarif', env.report_dir))
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: ${{ env.report_dir }}/results.sarif
+
+      - name: Upload scan report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: security-report-s2
+          path: ${{ env.report_dir }}
+          retention-days: 30
+
+  # ---- S3: Full scan with DAST (runs on tag push) ----
+  s3-full:
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install jq
+        run: sudo apt-get install -y jq
+
+      - name: Start application
+        run: |
+          # Adjust this to however your app starts
+          # docker-compose up -d
+          echo "App should be running at http://localhost/${PROJECT_NAME}/"
+
+      - name: Run full security scan (static + DAST + headers)
+        run: |
+          ${SCANNER_PATH}/scan.sh ${PROJECT_NAME} \
+            --url "http://localhost/${PROJECT_NAME}/" \
+            --sarif \
+            --threshold high
+
+      - name: Get report path
+        if: always()
+        run: |
+          REPORT=$(${SCANNER_PATH}/scan.sh --latest ${PROJECT_NAME})
+          echo "report_dir=${REPORT}" >> $GITHUB_ENV
+
+      - name: Upload SARIF to GitHub Code Scanning
+        if: always() && hashFiles(format('{0}/results.sarif', env.report_dir))
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: ${{ env.report_dir }}/results.sarif
+
+      - name: Upload scan report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: security-report-s3
+          path: ${{ env.report_dir }}
+          retention-days: 90
