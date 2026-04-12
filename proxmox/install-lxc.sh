@@ -21,7 +21,7 @@ REPO_URL="https://github.com/mudmin/userspice-security-scanner.git"
 REPO_DIR_NAME="userspice-security-scanner"
 APP_NAME="UserSpice Security Scanner"
 
-DEFAULT_HOSTNAME="scanner"
+DEFAULT_HOSTNAME="userspice-scanner"
 DEFAULT_DISK="16"      # GB — Docker images ~4GB + reports + OS
 DEFAULT_CORES="2"
 DEFAULT_RAM="4096"     # MB — Semgrep/PHPStan can be memory-hungry
@@ -104,14 +104,19 @@ ask "Root password (leave empty to generate):"
 read -rs ROOT_PW
 echo ""
 GENERATED_PW=0
-if [[ -z "$ROOT_PW" ]]; then
+gen_pw() {
     if command -v openssl &>/dev/null; then
-        ROOT_PW=$(openssl rand -base64 18 | tr -d '/+=' | cut -c1-16)
+        openssl rand -base64 18 | tr -d '/+=' | cut -c1-16
     else
-        ROOT_PW=$(tr -dc 'A-Za-z0-9' </dev/urandom | head -c 16)
+        tr -dc 'A-Za-z0-9' </dev/urandom | head -c 16
     fi
+}
+if [[ -z "$ROOT_PW" ]]; then
+    ROOT_PW="$(gen_pw)"
     GENERATED_PW=1
 fi
+# Always auto-generate the MariaDB root password — no reason to make the user pick one.
+MYSQL_PW="$(gen_pw)"
 
 echo ""
 echo -e "${BOLD}Review:${NC}"
@@ -200,30 +205,52 @@ fi
 ok "Network up"
 
 # ---- Install LAMP + Docker + tooling ----
-step "Installing LAMP, Docker, and scanner prerequisites (several minutes)"
+step "Installing LAMP, Docker, phpMyAdmin, and scanner prerequisites (several minutes)"
 
-if ! pct exec "$CTID" -- bash -c '
+if ! pct exec "$CTID" -- env MYSQL_PW="$MYSQL_PW" bash -c '
 set -e
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -q
 apt-get upgrade -yq
-apt-get install -yq --no-install-recommends \
-    apache2 \
-    mariadb-server \
-    php php-cli php-mysql php-xml php-mbstring php-curl php-zip php-gd php-intl \
-    libapache2-mod-php \
-    docker.io \
-    jq git curl unzip openssh-server sudo ca-certificates openssl
+
+# LAMP + Docker + tooling
+apt-get install -yq --no-install-recommends apache2 mariadb-server php php-cli php-mysql php-xml php-mbstring php-curl php-zip php-gd php-intl libapache2-mod-php docker.io jq git curl unzip openssh-server sudo ca-certificates openssl
+
 systemctl enable --now docker
 systemctl enable --now apache2
 systemctl enable --now mariadb
 systemctl enable --now ssh
+
+# Set MariaDB root password (chained auth: sudo mysql still works AND password auth works for phpMyAdmin)
+mariadb <<SQL
+ALTER USER "root"@"localhost" IDENTIFIED VIA unix_socket OR mysql_native_password USING PASSWORD("$MYSQL_PW");
+FLUSH PRIVILEGES;
+SQL
+
+cat > /root/.my.cnf <<CNF
+[client]
+user=root
+password=$MYSQL_PW
+CNF
+chmod 600 /root/.my.cnf
+
+# phpMyAdmin (non-interactive via debconf)
+debconf-set-selections <<DEBCONF
+phpmyadmin phpmyadmin/dbconfig-install boolean true
+phpmyadmin phpmyadmin/app-password-confirm password $MYSQL_PW
+phpmyadmin phpmyadmin/mysql/admin-pass password $MYSQL_PW
+phpmyadmin phpmyadmin/mysql/app-pass password $MYSQL_PW
+phpmyadmin phpmyadmin/reconfigure-webserver multiselect apache2
+DEBCONF
+apt-get install -yq phpmyadmin
+
+systemctl restart apache2
 '; then
     cleanup_on_fail
     fail "Package install failed."
     exit 1
 fi
-ok "Packages installed"
+ok "Packages installed and MariaDB configured"
 
 # ---- Clone scanner + wire it up ----
 step "Cloning scanner repo"
@@ -275,18 +302,28 @@ echo -e "  Container ID:   ${BOLD}${CTID}${NC}"
 echo -e "  Hostname:       ${BOLD}${HOSTNAME}${NC}"
 echo -e "  IP:             ${BOLD}${CT_IP:-<not-detected>}${NC}"
 if [[ $GENERATED_PW -eq 1 ]]; then
-    echo -e "  Root password:  ${BOLD}${ROOT_PW}${NC}   ${YELLOW}(generated — save it now)${NC}"
+    echo -e "  Root password:  ${BOLD}${ROOT_PW}${NC}   ${YELLOW}(LXC root login — generated)${NC}"
 else
     echo -e "  Root password:  ${BOLD}<as entered>${NC}"
 fi
+echo -e "  MariaDB root:   ${BOLD}${MYSQL_PW}${NC}   ${YELLOW}(database root — generated)${NC}"
 echo ""
-echo -e "  Web UI:  ${BOLD}http://${CT_IP:-<ip>}/${REPO_DIR_NAME}/ui/${NC}"
-echo -e "  SSH:     ${BOLD}ssh root@${CT_IP:-<ip>}${NC}"
+echo -e "  Web UI:      ${BOLD}http://${CT_IP:-<ip>}/${REPO_DIR_NAME}/ui/${NC}"
+echo -e "  phpMyAdmin:  ${BOLD}http://${CT_IP:-<ip>}/phpmyadmin/${NC}"
+echo -e "  SSH:         ${BOLD}ssh root@${CT_IP:-<ip>}${NC}"
+echo -e "  Console:     ${BOLD}pct enter ${CTID}${NC}"
 echo ""
-echo "  To scan a project:"
-echo "    1. Copy project files into the container under /var/www/html/<projectname>/"
-echo "       e.g.   pct push ${CTID} myproject.tar.gz /root/myproject.tar.gz"
-echo "              pct exec ${CTID} -- tar -xzf /root/myproject.tar.gz -C /var/www/html/"
-echo "    2. Open the Web UI and click the project, or run:"
+echo -e "  ${YELLOW}Save both passwords now — they will not be shown again.${NC}"
+echo "  (MariaDB password is also stored in /root/.my.cnf inside the container)"
+echo ""
+echo -e "  ${BOLD}Loading a project to scan:${NC}"
+echo "    1. Create a database for the project in phpMyAdmin"
+echo "    2. Copy project files into /var/www/html/<projectname>/ in the container"
+echo "         pct push ${CTID} myproject.tar.gz /root/myproject.tar.gz"
+echo "         pct exec ${CTID} -- tar -xzf /root/myproject.tar.gz -C /var/www/html/"
+echo "    3. Edit users/init.php with your DB credentials so the project actually runs"
+echo -e "       ${YELLOW}REQUIRED for authenticated/active ZAP scanning — the auth bootstrap${NC}"
+echo -e "       ${YELLOW}can only log in if the project is fully configured.${NC}"
+echo "    4. Open the Web UI and click the project, or run:"
 echo "         pct exec ${CTID} -- bash -c 'cd /var/www/html/${REPO_DIR_NAME} && ./scan.sh <projectname>'"
 echo ""
