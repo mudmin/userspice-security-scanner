@@ -221,6 +221,15 @@ systemctl enable --now apache2
 systemctl enable --now mariadb
 systemctl enable --now ssh
 
+# Allow root password login over SSH so SFTP/SCP work for transferring projects in.
+# Ubuntu 24 ships with PermitRootLogin prohibit-password, which blocks SFTP/SCP entirely.
+mkdir -p /etc/ssh/sshd_config.d
+cat > /etc/ssh/sshd_config.d/99-userspice-scanner.conf <<SSHCFG
+PermitRootLogin yes
+PasswordAuthentication yes
+SSHCFG
+systemctl restart ssh
+
 # Set MariaDB root password (chained auth: sudo mysql still works AND password auth works for phpMyAdmin)
 mariadb <<SQL
 ALTER USER "root"@"localhost" IDENTIFIED VIA unix_socket OR mysql_native_password USING PASSWORD("$MYSQL_PW");
