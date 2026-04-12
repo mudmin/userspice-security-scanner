@@ -274,8 +274,10 @@ tr:hover td { background: var(--bg-hover); }
     border: 1px solid var(--border);
     border-radius: 8px;
     padding: 1.5rem;
-    width: 450px;
+    width: 560px;
     max-width: 95vw;
+    max-height: 90vh;
+    overflow-y: auto;
 }
 .modal h2 { font-size: 1.1rem; margin-bottom: 1rem; }
 .form-group { margin-bottom: 1rem; }
