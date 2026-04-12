@@ -204,10 +204,15 @@ if [[ $NETWORK_READY -eq 0 ]]; then
 fi
 ok "Network up"
 
-# ---- Install LAMP + Docker + tooling ----
-step "Installing LAMP, Docker, phpMyAdmin, and scanner prerequisites (several minutes)"
+# ---- Install LAMP + Docker + tooling + LXC helpers ----
+step "Installing LAMP, Docker, phpMyAdmin, and LXC helpers (several minutes)"
 
-if ! pct exec "$CTID" -- env MYSQL_PW="$MYSQL_PW" bash -c '
+# We use heredoc-on-stdin (not bash -c '...') so the user's helper scripts —
+# which contain single quotes in things like RED='\033[0;31m' — flow through
+# verbatim without escape hell. The outer terminator is quoted ('CONTAINER_SCRIPT')
+# so the host does no interpolation; MYSQL_PW reaches the container via env.
+INSTALL_RC=0
+pct exec "$CTID" -- env MYSQL_PW="$MYSQL_PW" bash <<'CONTAINER_SCRIPT' || INSTALL_RC=$?
 set -e
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -q
@@ -229,6 +234,12 @@ PermitRootLogin yes
 PasswordAuthentication yes
 SSHCFG
 systemctl restart ssh
+
+# webdev group convention — used by /root/fixperms.sh on user-loaded projects.
+# Created here so the helper script has a working baseline; the scanner repo
+# itself stays owned by www-data:www-data and is NOT touched by this group.
+groupadd -f webdev
+usermod -aG webdev www-data
 
 # Set MariaDB root password (chained auth: sudo mysql still works AND password auth works for phpMyAdmin)
 mariadb <<SQL
@@ -253,13 +264,184 @@ phpmyadmin phpmyadmin/reconfigure-webserver multiselect apache2
 DEBCONF
 apt-get install -yq phpmyadmin
 
+# /var/www/html landing page — redirect to the scanner UI
+rm -f /var/www/html/index.html
+cat > /var/www/html/index.php <<INDEXPHP
+<?php
+header('Location: /userspice-security-scanner/ui/');
+exit;
+INDEXPHP
+chown www-data:www-data /var/www/html/index.php
+
+# /root/fixperms.sh — fix permissions for a project dir under /var/www/html
+cat > /root/fixperms.sh <<"FIXPERMS_END"
+#!/bin/bash
+
+# fixperms.sh - Fix web directory permissions for UserSpice/web apps
+# Usage: ./fixperms.sh [directory_name|*]
+# Example: ./fixperms.sh plgdev
+# Example: ./fixperms.sh *
+
+# Configuration - adjust these if needed
+WEB_ROOT="/var/www/html"
+WEB_USER="www-data"
+WEB_GROUP="webdev"
+CURRENT_USER=$(whoami)
+
+# Colors for output
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+NC='\033[0m' # No Color
+
+# Function to print colored output
+print_status() {
+    echo -e "${GREEN}[INFO]${NC} $1"
+}
+
+print_warning() {
+    echo -e "${YELLOW}[WARN]${NC} $1"
+}
+
+print_error() {
+    echo -e "${RED}[ERROR]${NC} $1"
+}
+
+# Function to fix permissions for a single directory
+fix_directory_perms() {
+    local target_dir="$1"
+    local full_path="$WEB_ROOT/$target_dir"
+
+    if [ ! -d "$full_path" ]; then
+        print_error "Directory $full_path does not exist"
+        return 1
+    fi
+
+    print_status "Fixing permissions for: $full_path"
+
+    # Set ownership to current user and webdev group
+    print_status "Setting ownership to $CURRENT_USER:$WEB_GROUP"
+    sudo chown -R "$WEB_USER:$WEB_GROUP" "$full_path"
+    	# save this old way of doing it
+	# sudo chown -R "$CURRENT_USER:$WEB_GROUP" "$full_path"
+
+    # Set directory permissions (755 + group write = 775)
+    print_status "Setting directory permissions to 775"
+    sudo find "$full_path" -type d -exec chmod 775 {} \;
+
+    # Set file permissions (644 + group write = 664)
+    print_status "Setting file permissions to 755"
+    sudo find "$full_path" -type f -exec chmod 775 {} \;
+
+    # Make PHP files executable
+    print_status "Making PHP files executable"
+    sudo find "$full_path" -name "*.php" -exec chmod 775 {} \;
+
+    # Set the setgid bit on directories so new files inherit the group
+    print_status "Setting setgid bit on directories"
+    sudo find "$full_path" -type d -exec chmod g+s {} \;
+
+    print_status "Completed: $target_dir"
+    echo ""
+}
+
+# Check if running as root
+if [ "$EUID" -eq 0 ]; then
+    print_error "Don't run this script as root. Run as your regular user - it will use sudo when needed."
+    exit 1
+fi
+
+# Check if webdev group exists
+if ! getent group "$WEB_GROUP" > /dev/null 2>&1; then
+    print_error "Group '$WEB_GROUP' does not exist. Please create it first:"
+    echo "  sudo groupadd $WEB_GROUP"
+    echo "  sudo usermod -a -G $WEB_GROUP $CURRENT_USER"
+    echo "  sudo usermod -a -G $WEB_GROUP $WEB_USER"
+    exit 1
+fi
+
+# Check if user is in webdev group
+if ! groups "$CURRENT_USER" | grep -q "$WEB_GROUP"; then
+    print_error "User '$CURRENT_USER' is not in group '$WEB_GROUP'"
+    echo "Run: sudo usermod -a -G $WEB_GROUP $CURRENT_USER"
+    echo "Then log out and back in."
+    exit 1
+fi
+
+# Check if www-data is in webdev group
+if ! groups "$WEB_USER" | grep -q "$WEB_GROUP"; then
+    print_error "User '$WEB_USER' is not in group '$WEB_GROUP'"
+    echo "Run: sudo usermod -a -G $WEB_GROUP $WEB_USER"
+    exit 1
+fi
+
+# Main logic
+if [ $# -eq 0 ]; then
+    print_error "Usage: $0 [directory_name|*]"
+    echo "Examples:"
+    echo "  $0 plgdev"
+    echo "  $0 '*'"
+    exit 1
+fi
+
+cd "$WEB_ROOT" || exit 1
+
+if [ "$1" = "*" ]; then
+    print_status "Fixing permissions for ALL directories in $WEB_ROOT"
+    print_warning "This will take a while..."
+
+    for dir in */; do
+        if [ -d "$dir" ]; then
+            fix_directory_perms "${dir%/}"
+        fi
+    done
+else
+    fix_directory_perms "$1"
+fi
+
+print_status "Permission fixing complete!"
+print_status "Both you ($CURRENT_USER) and the web server ($WEB_USER) should now have full access."
+
+# Test if we can create a file as www-data
+if [ "$1" != "*" ]; then
+    test_file="$WEB_ROOT/$1/perm_test_$(date +%s).tmp"
+    if sudo -u "$WEB_USER" touch "$test_file" 2>/dev/null; then
+        sudo rm "$test_file"
+        print_status "Permission test passed - www-data can write to $1"
+    else
+        print_error "Permission test failed - www-data cannot write to $1"
+    fi
+fi
+FIXPERMS_END
+chmod +x /root/fixperms.sh
+
+# /root/fixdb.sh — replace utf8mb4_0900_ai_ci with utf8mb4_unicode_ci in a SQL dump
+cat > /root/fixdb.sh <<"FIXDB_END"
+#!/bin/bash
+if [ -z "$1" ]; then
+    echo "Usage: $0 <dumpfile.sql>"
+    exit 1
+fi
+
+if [ ! -f "$1" ]; then
+    echo "File not found: $1"
+    exit 1
+fi
+
+sed -i 's/utf8mb4_0900_ai_ci/utf8mb4_unicode_ci/g' "$1"
+echo "Done. Replaced all utf8mb4_0900_ai_ci with utf8mb4_unicode_ci in $1"
+FIXDB_END
+chmod +x /root/fixdb.sh
+
 systemctl restart apache2
-'; then
+CONTAINER_SCRIPT
+
+if [[ $INSTALL_RC -ne 0 ]]; then
     cleanup_on_fail
     fail "Package install failed."
     exit 1
 fi
-ok "Packages installed and MariaDB configured"
+ok "Packages installed, MariaDB configured, helpers in /root/"
 
 # ---- Clone scanner + wire it up ----
 step "Cloning scanner repo"
@@ -317,13 +499,24 @@ else
 fi
 echo -e "  MariaDB root:   ${BOLD}${MYSQL_PW}${NC}   ${YELLOW}(database root — generated)${NC}"
 echo ""
-echo -e "  Web UI:      ${BOLD}http://${CT_IP:-<ip>}/${REPO_DIR_NAME}/ui/${NC}"
+echo -e "  Web UI:      ${BOLD}http://${CT_IP:-<ip>}/${NC}   (auto-redirects to /${REPO_DIR_NAME}/ui/)"
 echo -e "  phpMyAdmin:  ${BOLD}http://${CT_IP:-<ip>}/phpmyadmin/${NC}"
-echo -e "  SSH:         ${BOLD}ssh root@${CT_IP:-<ip>}${NC}"
+echo -e "  SSH/SFTP:    ${BOLD}ssh root@${CT_IP:-<ip>}${NC}"
 echo -e "  Console:     ${BOLD}pct enter ${CTID}${NC}"
 echo ""
 echo -e "  ${YELLOW}Save both passwords now — they will not be shown again.${NC}"
 echo "  (MariaDB password is also stored in /root/.my.cnf inside the container)"
+echo ""
+echo -e "  ${BOLD}Helper scripts in /root/ (LXC only):${NC}"
+echo "    fixperms.sh   — chown -R www-data:webdev + 775 + setgid for a project dir"
+echo "                    Refuses to run as root by design — create a regular user first:"
+echo "                      useradd -m -G webdev,sudo,docker -s /bin/bash <name>"
+echo "                      passwd <name>"
+echo "    fixdb.sh      — sed-replace utf8mb4_0900_ai_ci -> utf8mb4_unicode_ci in a SQL dump"
+echo ""
+echo "  The 'webdev' group exists and www-data is in it. The scanner repo itself is"
+echo "  owned by www-data:www-data and is not touched by fixperms.sh — only run"
+echo "  fixperms.sh against your loaded project directories, not the scanner."
 echo ""
 echo -e "  ${BOLD}Loading a project to scan:${NC}"
 echo "    1. Create a database for the project in phpMyAdmin"
