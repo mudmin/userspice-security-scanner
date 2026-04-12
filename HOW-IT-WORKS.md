@@ -4,9 +4,21 @@ A local, Docker-based security scanning stack built for UserSpice PHP projects. 
 
 ## Setup
 
+### Option A — Proxmox (one command, fully automated)
+
+If you have a Proxmox VE host, this is the fastest path. On the Proxmox host as root:
+
 ```bash
-git clone <this-repo> /var/www/html/codetest
-cd /var/www/html/codetest
+bash -c "$(wget -qO - https://raw.githubusercontent.com/mudmin/userspice-security-scanner/main/proxmox/install-lxc.sh)"
+```
+
+Creates an unprivileged Ubuntu 24.04 LXC with Apache + PHP + MariaDB + Docker, clones the scanner, pre-pulls all scanner images, and prints the web UI URL when finished. See [proxmox/install-lxc.sh](proxmox/install-lxc.sh).
+
+### Option B — Manual install on any Linux
+
+```bash
+git clone https://github.com/mudmin/userspice-security-scanner.git
+cd userspice-security-scanner
 ./setup.sh
 ```
 
