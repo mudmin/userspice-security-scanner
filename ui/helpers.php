@@ -37,9 +37,11 @@ function has_password(): bool {
 
 /**
  * Check if the current session is authenticated.
+ * A fresh install (no password set) is NOT authenticated — the UI must
+ * render the first-run setup form instead, and the API must reject everything
+ * except the `set-password` action until a password exists.
  */
 function is_authenticated(): bool {
-    if (!has_password()) return true; // No password set = open access (first-run)
     if (session_status() === PHP_SESSION_NONE) session_start();
     return !empty($_SESSION['scanner_auth']);
 }

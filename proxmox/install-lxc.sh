@@ -100,10 +100,6 @@ ask "Container storage [${DEFAULT_CT_STORAGE}]:"
 read -r CT_STORAGE
 CT_STORAGE="${CT_STORAGE:-$DEFAULT_CT_STORAGE}"
 
-ask "Root password (leave empty to generate):"
-read -rs ROOT_PW
-echo ""
-GENERATED_PW=0
 gen_pw() {
     if command -v openssl &>/dev/null; then
         openssl rand -base64 18 | tr -d '/+=' | cut -c1-16
@@ -111,12 +107,43 @@ gen_pw() {
         tr -dc 'A-Za-z0-9' </dev/urandom | head -c 16
     fi
 }
+
+ask "LXC root password (leave empty to generate):"
+read -rs ROOT_PW
+echo ""
+GENERATED_ROOT_PW=0
 if [[ -z "$ROOT_PW" ]]; then
     ROOT_PW="$(gen_pw)"
-    GENERATED_PW=1
+    GENERATED_ROOT_PW=1
 fi
-# Always auto-generate the MariaDB root password — no reason to make the user pick one.
-MYSQL_PW="$(gen_pw)"
+
+ask "MariaDB root password (leave empty to generate):"
+read -rs MYSQL_PW
+echo ""
+GENERATED_MYSQL_PW=0
+if [[ -z "$MYSQL_PW" ]]; then
+    MYSQL_PW="$(gen_pw)"
+    GENERATED_MYSQL_PW=1
+fi
+
+echo ""
+echo -e "${BOLD}Optional services:${NC}"
+ask "Install Tiny File Manager (web file uploads scoped to /var/www/html)? [y/N]:"
+read -r TFM_ANSWER
+INSTALL_TFM=0
+TFM_PASS=""
+if [[ "${TFM_ANSWER,,}" == "y" ]]; then
+    INSTALL_TFM=1
+    TFM_PASS="$(gen_pw)"
+fi
+
+ask "Restrict web access to a single IP? Enter IP, or leave blank for unrestricted:"
+read -r RESTRICT_IP
+# Basic validation: allow empty or looks-like IPv4 / IPv6
+if [[ -n "$RESTRICT_IP" && ! "$RESTRICT_IP" =~ ^[0-9a-fA-F:.]+$ ]]; then
+    fail "Invalid IP: $RESTRICT_IP"
+    exit 1
+fi
 
 echo ""
 echo -e "${BOLD}Review:${NC}"
@@ -126,6 +153,8 @@ echo "  Disk:            ${DISK} GB on ${CT_STORAGE}"
 echo "  CPU / RAM:       ${CORES} cores / ${RAM} MB"
 echo "  Bridge:          ${BRIDGE}"
 echo "  Template store:  ${TEMPLATE_STORAGE}"
+echo "  Tiny File Mgr:   $([[ $INSTALL_TFM -eq 1 ]] && echo yes || echo no)"
+echo "  Web IP lock:     ${RESTRICT_IP:-<none — unrestricted>}"
 echo ""
 ask "Proceed? [Y/n]:"
 read -r CONFIRM
@@ -212,7 +241,12 @@ step "Installing LAMP, Docker, phpMyAdmin, and LXC helpers (several minutes)"
 # verbatim without escape hell. The outer terminator is quoted ('CONTAINER_SCRIPT')
 # so the host does no interpolation; MYSQL_PW reaches the container via env.
 INSTALL_RC=0
-pct exec "$CTID" -- env MYSQL_PW="$MYSQL_PW" bash <<'CONTAINER_SCRIPT' || INSTALL_RC=$?
+pct exec "$CTID" -- env \
+    MYSQL_PW="$MYSQL_PW" \
+    TFM_PASS="$TFM_PASS" \
+    RESTRICT_IP="$RESTRICT_IP" \
+    INSTALL_TFM="$INSTALL_TFM" \
+    bash <<'CONTAINER_SCRIPT' || INSTALL_RC=$?
 set -e
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -q
@@ -263,6 +297,55 @@ phpmyadmin phpmyadmin/mysql/app-pass password $MYSQL_PW
 phpmyadmin phpmyadmin/reconfigure-webserver multiselect apache2
 DEBCONF
 apt-get install -yq phpmyadmin
+
+# PHP tuning for long scanner jobs and large UserSpice form posts
+PHP_VER=$(php -r 'echo PHP_MAJOR_VERSION.".".PHP_MINOR_VERSION;')
+for CTX in apache2 cli; do
+    INI_DIR="/etc/php/${PHP_VER}/${CTX}/conf.d"
+    if [[ -d "$INI_DIR" ]]; then
+        cat > "$INI_DIR/99-userspice-scanner.ini" <<PHPINI
+max_execution_time = 600
+max_input_time = 600
+memory_limit = 512M
+max_input_vars = 10000
+post_max_size = 256M
+upload_max_filesize = 256M
+PHPINI
+    fi
+done
+
+# Optional: restrict all web access to a single IP via Apache Require.
+# Scoped to /var/www/html so it catches scanner UI, phpMyAdmin, and TFM.
+if [[ -n "$RESTRICT_IP" ]]; then
+    cat > /etc/apache2/conf-available/99-userspice-restrict.conf <<APACHERESTRICT
+<Directory /var/www/html>
+    Require ip $RESTRICT_IP
+</Directory>
+APACHERESTRICT
+    a2enconf 99-userspice-restrict >/dev/null 2>&1 || true
+fi
+
+# Optional: Tiny File Manager at /var/www/html/files/
+if [[ "$INSTALL_TFM" == "1" && -n "$TFM_PASS" ]]; then
+    mkdir -p /var/www/html/files
+    # Upstream single-file distribution
+    if ! wget -qO /var/www/html/files/index.php https://raw.githubusercontent.com/prasathmani/tinyfilemanager/master/tinyfilemanager.php; then
+        echo "warning: failed to download tinyfilemanager.php — skipping TFM install"
+    else
+        # Generate bcrypt hash in PHP (safe — no shell escaping of $ in hash)
+        TFM_HASH=$(TFM_PASS="$TFM_PASS" php -r 'echo password_hash(getenv("TFM_PASS"), PASSWORD_BCRYPT);')
+        # TFM supports an external config.php that overrides the defaults in the main file.
+        cat > /var/www/html/files/config.php <<PHPCFG
+<?php
+\$use_auth = true;
+\$auth_users = ['admin' => '$TFM_HASH'];
+\$root_path = '/var/www/html';
+\$directories_users = [];
+\$readonly_users = [];
+PHPCFG
+        chown -R www-data:www-data /var/www/html/files
+    fi
+fi
 
 # /var/www/html landing page — redirect to the scanner UI
 rm -f /var/www/html/index.html
@@ -492,19 +575,32 @@ echo ""
 echo -e "  Container ID:   ${BOLD}${CTID}${NC}"
 echo -e "  Hostname:       ${BOLD}${HOSTNAME}${NC}"
 echo -e "  IP:             ${BOLD}${CT_IP:-<not-detected>}${NC}"
-if [[ $GENERATED_PW -eq 1 ]]; then
+if [[ $GENERATED_ROOT_PW -eq 1 ]]; then
     echo -e "  Root password:  ${BOLD}${ROOT_PW}${NC}   ${YELLOW}(LXC root login — generated)${NC}"
 else
     echo -e "  Root password:  ${BOLD}<as entered>${NC}"
 fi
-echo -e "  MariaDB root:   ${BOLD}${MYSQL_PW}${NC}   ${YELLOW}(database root — generated)${NC}"
+if [[ $GENERATED_MYSQL_PW -eq 1 ]]; then
+    echo -e "  MariaDB root:   ${BOLD}${MYSQL_PW}${NC}   ${YELLOW}(database root — generated)${NC}"
+else
+    echo -e "  MariaDB root:   ${BOLD}<as entered>${NC}"
+fi
 echo ""
 echo -e "  Web UI:      ${BOLD}http://${CT_IP:-<ip>}/${NC}   (auto-redirects to /${REPO_DIR_NAME}/ui/)"
 echo -e "  phpMyAdmin:  ${BOLD}http://${CT_IP:-<ip>}/phpmyadmin/${NC}"
+if [[ $INSTALL_TFM -eq 1 ]]; then
+    echo -e "  File Mgr:    ${BOLD}http://${CT_IP:-<ip>}/files/${NC}"
+    echo -e "               username: ${BOLD}admin${NC}  password: ${BOLD}${TFM_PASS}${NC}"
+fi
 echo -e "  SSH/SFTP:    ${BOLD}ssh root@${CT_IP:-<ip>}${NC}"
 echo -e "  Console:     ${BOLD}pct enter ${CTID}${NC}"
+if [[ -n "$RESTRICT_IP" ]]; then
+    echo ""
+    echo -e "  ${YELLOW}Web access is restricted to IP: ${BOLD}${RESTRICT_IP}${NC}"
+    echo -e "  ${YELLOW}Edit /etc/apache2/conf-available/99-userspice-restrict.conf to change.${NC}"
+fi
 echo ""
-echo -e "  ${YELLOW}Save both passwords now — they will not be shown again.${NC}"
+echo -e "  ${YELLOW}Save all passwords now — they will not be shown again.${NC}"
 echo "  (MariaDB password is also stored in /root/.my.cnf inside the container)"
 echo ""
 echo -e "  ${BOLD}Helper scripts in /root/ (LXC only):${NC}"

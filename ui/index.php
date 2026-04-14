@@ -29,8 +29,8 @@ $has_password = has_password();
 </head>
 <body>
 
-<?php if (!$authenticated && !$has_password): ?>
-<!-- First-run: Set a password -->
+<?php if (!$has_password): ?>
+<!-- First-run: Set a password (no password exists yet; setup form gates everything) -->
 <div class="auth-page">
     <h1>Welcome to UserSpice Security Scanner</h1>
     <p>Set a password to secure the web interface. This will be stored as a bcrypt hash in scanner.conf.</p>
