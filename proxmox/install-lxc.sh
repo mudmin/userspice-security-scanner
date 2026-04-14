@@ -131,19 +131,24 @@ echo -e "${BOLD}Optional services:${NC}"
 ask "Install Tiny File Manager (web file uploads scoped to /var/www/html)? [y/N]:"
 read -r TFM_ANSWER
 INSTALL_TFM=0
-TFM_PASS=""
 if [[ "${TFM_ANSWER,,}" == "y" ]]; then
     INSTALL_TFM=1
-    TFM_PASS="$(gen_pw)"
 fi
+# Tiny File Manager reuses the MariaDB password so the user has one fewer
+# credential to remember. Both are "web admin" tier; keeping them separate
+# from the LXC root password.
 
-ask "Restrict web access to a single IP? Enter IP, or leave blank for unrestricted:"
-read -r RESTRICT_IP
-# Basic validation: allow empty or looks-like IPv4 / IPv6
-if [[ -n "$RESTRICT_IP" && ! "$RESTRICT_IP" =~ ^[0-9a-fA-F:.]+$ ]]; then
-    fail "Invalid IP: $RESTRICT_IP"
-    exit 1
-fi
+while true; do
+    ask "Restrict web access to a single IP? Enter IP, or leave blank for unrestricted:"
+    read -r RESTRICT_IP
+    if [[ -z "$RESTRICT_IP" ]]; then
+        break
+    fi
+    if [[ "$RESTRICT_IP" =~ ^[0-9a-fA-F:.]+$ ]]; then
+        break
+    fi
+    warn "\"$RESTRICT_IP\" does not look like an IP address — try again or leave blank for unrestricted"
+done
 
 echo ""
 echo -e "${BOLD}Review:${NC}"
@@ -243,7 +248,6 @@ step "Installing LAMP, Docker, phpMyAdmin, and LXC helpers (several minutes)"
 INSTALL_RC=0
 pct exec "$CTID" -- env \
     MYSQL_PW="$MYSQL_PW" \
-    TFM_PASS="$TFM_PASS" \
     RESTRICT_IP="$RESTRICT_IP" \
     INSTALL_TFM="$INSTALL_TFM" \
     bash <<'CONTAINER_SCRIPT' || INSTALL_RC=$?
@@ -326,15 +330,15 @@ APACHERESTRICT
 fi
 
 # Optional: Tiny File Manager at /var/www/html/files/
-if [[ "$INSTALL_TFM" == "1" && -n "$TFM_PASS" ]]; then
+# Reuses $MYSQL_PW as the TFM admin password so there's one fewer credential
+# to juggle. Bcrypt hash is generated in PHP so the hash's $-characters never
+# touch the shell.
+if [[ "$INSTALL_TFM" == "1" ]]; then
     mkdir -p /var/www/html/files
-    # Upstream single-file distribution
     if ! wget -qO /var/www/html/files/index.php https://raw.githubusercontent.com/prasathmani/tinyfilemanager/master/tinyfilemanager.php; then
         echo "warning: failed to download tinyfilemanager.php — skipping TFM install"
     else
-        # Generate bcrypt hash in PHP (safe — no shell escaping of $ in hash)
-        TFM_HASH=$(TFM_PASS="$TFM_PASS" php -r 'echo password_hash(getenv("TFM_PASS"), PASSWORD_BCRYPT);')
-        # TFM supports an external config.php that overrides the defaults in the main file.
+        TFM_HASH=$(TFM_PASS="$MYSQL_PW" php -r 'echo password_hash(getenv("TFM_PASS"), PASSWORD_BCRYPT);')
         cat > /var/www/html/files/config.php <<PHPCFG
 <?php
 \$use_auth = true;
@@ -575,22 +579,16 @@ echo ""
 echo -e "  Container ID:   ${BOLD}${CTID}${NC}"
 echo -e "  Hostname:       ${BOLD}${HOSTNAME}${NC}"
 echo -e "  IP:             ${BOLD}${CT_IP:-<not-detected>}${NC}"
-if [[ $GENERATED_ROOT_PW -eq 1 ]]; then
-    echo -e "  Root password:  ${BOLD}${ROOT_PW}${NC}   ${YELLOW}(LXC root login — generated)${NC}"
-else
-    echo -e "  Root password:  ${BOLD}<as entered>${NC}"
-fi
-if [[ $GENERATED_MYSQL_PW -eq 1 ]]; then
-    echo -e "  MariaDB root:   ${BOLD}${MYSQL_PW}${NC}   ${YELLOW}(database root — generated)${NC}"
-else
-    echo -e "  MariaDB root:   ${BOLD}<as entered>${NC}"
-fi
+ROOT_PW_LABEL=$([[ $GENERATED_ROOT_PW -eq 1 ]] && echo "generated" || echo "as entered")
+MYSQL_PW_LABEL=$([[ $GENERATED_MYSQL_PW -eq 1 ]] && echo "generated" || echo "as entered")
+echo -e "  Root password:  ${BOLD}${ROOT_PW}${NC}   ${YELLOW}(LXC root login — ${ROOT_PW_LABEL})${NC}"
+echo -e "  MariaDB root:   ${BOLD}${MYSQL_PW}${NC}   ${YELLOW}(database root — ${MYSQL_PW_LABEL})${NC}"
 echo ""
 echo -e "  Web UI:      ${BOLD}http://${CT_IP:-<ip>}/${NC}   (auto-redirects to /${REPO_DIR_NAME}/ui/)"
 echo -e "  phpMyAdmin:  ${BOLD}http://${CT_IP:-<ip>}/phpmyadmin/${NC}"
 if [[ $INSTALL_TFM -eq 1 ]]; then
     echo -e "  File Mgr:    ${BOLD}http://${CT_IP:-<ip>}/files/${NC}"
-    echo -e "               username: ${BOLD}admin${NC}  password: ${BOLD}${TFM_PASS}${NC}"
+    echo -e "               username: ${BOLD}admin${NC}  password: ${BOLD}${MYSQL_PW}${NC} ${YELLOW}(same as MariaDB)${NC}"
 fi
 echo -e "  SSH/SFTP:    ${BOLD}ssh root@${CT_IP:-<ip>}${NC}"
 echo -e "  Console:     ${BOLD}pct enter ${CTID}${NC}"
