@@ -9,7 +9,9 @@ define('REPORTS_DIR', SCANNER_ROOT . '/reports');
 define('SCAN_SCRIPT', SCANNER_ROOT . '/scan.sh');
 define('PID_DIR', SCANNER_ROOT . '/reports/.pids');
 
-// Load local config (created by setup.sh)
+// Load local config (created by setup.sh). scanner.conf is also sourced as a
+// bash file by lib/common.sh, so values containing shell metacharacters ($, `, etc.)
+// must be single-quoted in the file. We strip surrounding quotes on read here.
 $_scannerConf = [];
 $_confFile = SCANNER_ROOT . '/scanner.conf';
 if (file_exists($_confFile)) {
@@ -18,7 +20,13 @@ if (file_exists($_confFile)) {
         if ($line === '' || $line[0] === '#') continue;
         if (str_contains($line, '=')) {
             [$key, $val] = explode('=', $line, 2);
-            $_scannerConf[trim($key)] = trim($val);
+            $val = trim($val);
+            if (strlen($val) >= 2
+                && (($val[0] === "'" && $val[-1] === "'")
+                 || ($val[0] === '"' && $val[-1] === '"'))) {
+                $val = substr($val, 1, -1);
+            }
+            $_scannerConf[trim($key)] = $val;
         }
     }
 }
@@ -69,11 +77,16 @@ function set_password(string $password): bool {
 
     $content = file_get_contents($conf_file);
 
-    // Replace or append AUTH_HASH
-    if (str_contains($content, 'AUTH_HASH=')) {
-        $content = preg_replace('/^AUTH_HASH=.*$/m', 'AUTH_HASH=' . $hash, $content);
+    // Single-quote the hash. scanner.conf is sourced as bash, and the bcrypt
+    // hash starts with $2y$... — unquoted, bash would try to expand $2y, $10,
+    // etc. as shell variables and crash every scan under `set -u`. Single
+    // quotes prevent expansion and are stripped by the PHP reader above.
+    $quoted = "AUTH_HASH='" . $hash . "'";
+
+    if (preg_match('/^AUTH_HASH=.*$/m', $content)) {
+        $content = preg_replace('/^AUTH_HASH=.*$/m', $quoted, $content);
     } else {
-        $content = rtrim($content) . "\n\n# Web UI password (bcrypt hash)\nAUTH_HASH=" . $hash . "\n";
+        $content = rtrim($content) . "\n\n# Web UI password (bcrypt hash)\n" . $quoted . "\n";
     }
 
     return file_put_contents($conf_file, $content) !== false;
