@@ -129,6 +129,12 @@ async function handleLogin(e) {
     <nav>
         <a href="#dashboard" class="btn btn-sm">Dashboard</a>
         <a href="#docs" class="btn btn-sm">Docs</a>
+<?php if (file_exists(BASE_SCAN_DIR . '/files/index.php')): ?>
+        <a href="/files/" target="_blank" rel="noopener" class="btn btn-sm">Files</a>
+<?php endif; ?>
+<?php if (is_dir('/usr/share/phpmyadmin')): ?>
+        <a href="/phpmyadmin/" target="_blank" rel="noopener" class="btn btn-sm">phpMyAdmin</a>
+<?php endif; ?>
         <a href="#" class="btn btn-sm" onclick="logout(); return false;">Logout</a>
     </nav>
 </header>
