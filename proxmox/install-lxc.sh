@@ -62,6 +62,60 @@ echo ""
 # ---- Gather input ----
 step "Configuration"
 
+gen_pw() {
+    if command -v openssl &>/dev/null; then
+        openssl rand -base64 18 | tr -d '/+=' | cut -c1-16
+    else
+        tr -dc 'A-Za-z0-9' </dev/urandom | head -c 16
+    fi
+}
+
+# --- Security / service prompts first (the choices that matter) ---
+
+ask "LXC root password (leave empty to generate):"
+read -rs ROOT_PW
+echo ""
+GENERATED_ROOT_PW=0
+if [[ -z "$ROOT_PW" ]]; then
+    ROOT_PW="$(gen_pw)"
+    GENERATED_ROOT_PW=1
+fi
+
+ask "MariaDB root password (leave empty to generate):"
+read -rs MYSQL_PW
+echo ""
+GENERATED_MYSQL_PW=0
+if [[ -z "$MYSQL_PW" ]]; then
+    MYSQL_PW="$(gen_pw)"
+    GENERATED_MYSQL_PW=1
+fi
+
+ask "Install Tiny File Manager (web uploads, reuses MariaDB password)? [y/N]:"
+read -r TFM_ANSWER
+INSTALL_TFM=0
+if [[ "${TFM_ANSWER,,}" == "y" ]]; then
+    INSTALL_TFM=1
+fi
+
+while true; do
+    ask "Restrict web access to a single IP? Enter IP, or leave blank for unrestricted:"
+    read -r RESTRICT_IP
+    if [[ -z "$RESTRICT_IP" ]]; then
+        break
+    fi
+    if [[ "$RESTRICT_IP" =~ ^[0-9a-fA-F:.]+$ ]]; then
+        break
+    fi
+    warn "\"$RESTRICT_IP\" does not look like an IP address — try again or leave blank for unrestricted"
+done
+
+# --- Container resource prompts second (defaults work for most hosts) ---
+echo ""
+echo -e "${BOLD}Container resources${NC}"
+echo -e "  ${YELLOW}You can hit Enter through the rest of these prompts — the defaults${NC}"
+echo -e "  ${YELLOW}work for most Proxmox hosts. Customize only if you need to.${NC}"
+echo ""
+
 NEXT_ID=$(pvesh get /cluster/nextid 2>/dev/null || echo "200")
 ask "Container ID [${NEXT_ID}]:"
 read -r CTID
@@ -99,56 +153,6 @@ TEMPLATE_STORAGE="${TEMPLATE_STORAGE:-$DEFAULT_TEMPLATE_STORAGE}"
 ask "Container storage [${DEFAULT_CT_STORAGE}]:"
 read -r CT_STORAGE
 CT_STORAGE="${CT_STORAGE:-$DEFAULT_CT_STORAGE}"
-
-gen_pw() {
-    if command -v openssl &>/dev/null; then
-        openssl rand -base64 18 | tr -d '/+=' | cut -c1-16
-    else
-        tr -dc 'A-Za-z0-9' </dev/urandom | head -c 16
-    fi
-}
-
-ask "LXC root password (leave empty to generate):"
-read -rs ROOT_PW
-echo ""
-GENERATED_ROOT_PW=0
-if [[ -z "$ROOT_PW" ]]; then
-    ROOT_PW="$(gen_pw)"
-    GENERATED_ROOT_PW=1
-fi
-
-ask "MariaDB root password (leave empty to generate):"
-read -rs MYSQL_PW
-echo ""
-GENERATED_MYSQL_PW=0
-if [[ -z "$MYSQL_PW" ]]; then
-    MYSQL_PW="$(gen_pw)"
-    GENERATED_MYSQL_PW=1
-fi
-
-echo ""
-echo -e "${BOLD}Optional services:${NC}"
-ask "Install Tiny File Manager (web file uploads scoped to /var/www/html)? [y/N]:"
-read -r TFM_ANSWER
-INSTALL_TFM=0
-if [[ "${TFM_ANSWER,,}" == "y" ]]; then
-    INSTALL_TFM=1
-fi
-# Tiny File Manager reuses the MariaDB password so the user has one fewer
-# credential to remember. Both are "web admin" tier; keeping them separate
-# from the LXC root password.
-
-while true; do
-    ask "Restrict web access to a single IP? Enter IP, or leave blank for unrestricted:"
-    read -r RESTRICT_IP
-    if [[ -z "$RESTRICT_IP" ]]; then
-        break
-    fi
-    if [[ "$RESTRICT_IP" =~ ^[0-9a-fA-F:.]+$ ]]; then
-        break
-    fi
-    warn "\"$RESTRICT_IP\" does not look like an IP address — try again or leave blank for unrestricted"
-done
 
 echo ""
 echo -e "${BOLD}Review:${NC}"
@@ -240,6 +244,10 @@ ok "Network up"
 
 # ---- Install LAMP + Docker + tooling + LXC helpers ----
 step "Installing LAMP, Docker, phpMyAdmin, and LXC helpers (several minutes)"
+warn "You'll see harmless 'Cannot set LC_CTYPE' / 'LC_ALL' warnings during apt"
+warn "install. The stock Ubuntu 24 LXC template doesn't ship locale data, so"
+warn "dpkg post-install hooks can't set them. Expected. Install is still working."
+echo ""
 
 # We use heredoc-on-stdin (not bash -c '...') so the user's helper scripts —
 # which contain single quotes in things like RED='\033[0;31m' — flow through
