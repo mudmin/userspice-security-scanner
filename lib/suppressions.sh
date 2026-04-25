@@ -70,12 +70,32 @@ apply_suppressions() {
         # Glob scope: pre-expand patterns against all unique finding files,
         # then convert to file-scope entries for O(1) lookup.
         # This avoids calling test() inside any() which blows jq stack on large sets.
+        # Glob → regex: escape `.`, translate `**` to `.*` (any depth),
+        # and `*` to `[^/]*` (single segment). `**` must be handled before `*`.
         ([.findings | to_entries[] | .value | if type == "array" then .[].file // empty else empty end] | unique) as $all_files |
         ($supps[0] | [.[] | select(.scope == "glob")] | [.[] as $g |
-            ($g.file | gsub("[.]";"[.]") | gsub("[*]";"[^/]*") | "^" + . + "$") as $pat |
+            ($g.file
+                | gsub("[.]"; "[.]")
+                | gsub("[*][*]"; "<DSTAR>")
+                | gsub("[*]"; "[^/]*")
+                | gsub("<DSTAR>"; ".*")
+                | "^" + . + "$") as $pat |
             $all_files[] | select(test($pat)) |
             {($g.tool + "|" + $g.rule + "|" + .): true}
         ] | add // {}) as $by_glob |
+
+        # Path scope: match tool + file-glob (rule is a wildcard — all rules suppressed
+        # for any file matching the glob). Same glob→regex translation as $by_glob.
+        ($supps[0] | [.[] | select(.scope == "path")] | [.[] as $g |
+            ($g.file
+                | gsub("[.]"; "[.]")
+                | gsub("[*][*]"; "<DSTAR>")
+                | gsub("[*]"; "[^/]*")
+                | gsub("<DSTAR>"; ".*")
+                | "^" + . + "$") as $pat |
+            $all_files[] | select(test($pat)) |
+            {($g.tool + "|" + .): true}
+        ] | add // {}) as $by_path |
 
         # Check if a finding is suppressed via any scope
         def is_suppressed($tool; $rule; $file; $line; $hash):
@@ -83,10 +103,12 @@ apply_suppressions() {
             ($tool + "|" + $rule + "|" + $file + "|" + ($line | tostring)) as $lk |
             ($tool + "|" + $rule + "|" + $file) as $rfk |
             ($tool + "|" + $rule) as $rk |
+            ($tool + "|" + $file) as $tfk |
             ($exact.hash | has($ck)) or ($exact.line | has($lk))
             or ($by_file | has($rfk))
             or ($by_rule | has($rk))
-            or ($by_glob | has($rfk));
+            or ($by_glob | has($rfk))
+            or ($by_path | has($tfk));
 
         # Process each findings array
         .findings as $f |

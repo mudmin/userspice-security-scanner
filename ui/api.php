@@ -242,7 +242,7 @@ switch ($action) {
             $tool = $item['tool'] ?? '';
             $rule = $item['rule'] ?? '';
             $file = $item['file'] ?? '';
-            $scope = $item['scope'] ?? 'exact'; // exact, file, rule
+            $scope = $item['scope'] ?? 'exact'; // exact, file, rule, glob, path
 
             if (!$tool || !$rule) continue;
 

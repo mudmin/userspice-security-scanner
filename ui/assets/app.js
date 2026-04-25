@@ -667,11 +667,31 @@ function renderFindings(panel, items, project) {
                     e.stopPropagation();
                     openSuppressModal(f, file, project);
                 }}),
-                el('button', { className: 'btn btn-sm', textContent: 'Suppress all this rule in file', onClick: (e) => {
+                el('button', { className: 'btn btn-sm', textContent: 'Rule in file', onClick: (e) => {
                     e.stopPropagation();
                     openSuppressModal(f, file, project, 'file');
                 }}),
-                el('button', { className: 'btn btn-sm', textContent: 'Suppress this rule everywhere', onClick: (e) => {
+                el('button', { className: 'btn btn-sm', textContent: 'Rule in folder', onClick: (e) => {
+                    e.stopPropagation();
+                    const parent = fileParent(file);
+                    if (!parent) { alert('File is at the project root — use "Rule everywhere" instead.'); return; }
+                    openSuppressModal(f, `${parent}/*`, project, 'glob');
+                }}),
+                el('button', { className: 'btn btn-sm', textContent: 'Rule in folder + subfolders', onClick: (e) => {
+                    e.stopPropagation();
+                    const parent = fileParent(file);
+                    if (!parent) { alert('File is at the project root — use "Rule everywhere" instead.'); return; }
+                    // `<parent>/**` matches any depth including direct children.
+                    // `<parent>/**/*` would miss the current file because ** requires ≥1 nested dir.
+                    openSuppressModal(f, `${parent}/**`, project, 'glob');
+                }}),
+                el('button', { className: 'btn btn-sm', textContent: 'All rules in folder + subfolders', onClick: (e) => {
+                    e.stopPropagation();
+                    const parent = fileParent(file);
+                    if (!parent) { alert('File is at the project root — this would suppress everything.'); return; }
+                    openSuppressModal(f, `${parent}/**`, project, 'path');
+                }}),
+                el('button', { className: 'btn btn-sm', textContent: 'Rule everywhere', onClick: (e) => {
                     e.stopPropagation();
                     openSuppressModal(f, file, project, 'rule');
                 }}),
@@ -991,10 +1011,18 @@ async function startScan(project, url, zapProfile, zapUser, zapPass, skip, zapLo
         alert(result.error);
         return;
     }
-    // Switch to project view and show progress
-    navigate(`project/${project}`);
-    render();
-    pollScanStatus(project);
+    // Switch to project view and show progress.
+    // navigate() fires hashchange → render() when the hash actually changes.
+    // If we're already on this project's page (New Scan from the same page),
+    // the hash doesn't change so we have to render explicitly. Doing both would
+    // cause two concurrent render()s to interleave and duplicate the scan card.
+    // renderScanProgress() starts its own poll loop — no explicit pollScanStatus.
+    const targetHash = `#project/${project}`;
+    if (window.location.hash === targetHash) {
+        render();
+    } else {
+        navigate(`project/${project}`);
+    }
 }
 
 async function rerunScan(project, opts) {
@@ -1156,6 +1184,36 @@ function bulkSuppressVisible(project) {
 
 // ---- Suppress Modal ----
 
+// Parent directory of a project-relative path, or '' if already at the root.
+function fileParent(file) {
+    const i = (file || '').lastIndexOf('/');
+    return i > 0 ? file.substring(0, i) : '';
+}
+
+// Paths that are usually better handled via path exclusion than suppression.
+// Returns { label, configFile } if file looks noisy, or null.
+function noisyPathHint(file, tool) {
+    const patterns = [
+        { re: /(^|\/)vendor\//,       label: 'Composer vendor code' },
+        { re: /(^|\/)node_modules\//, label: 'npm vendor code' },
+        { re: /(^|\/)(demo|demos|examples?)(\/|$)/i, label: 'demo/example code' },
+        { re: /(^|\/)docs?(\/|$)/i,   label: 'documentation' },
+        { re: /(^|\/)tests?(\/|$)/i,  label: 'test files' },
+        { re: /\.min\.(js|css)$/,     label: 'minified assets' },
+    ];
+    const hit = patterns.find(p => p.re.test(file || ''));
+    if (!hit) return null;
+    const configByTool = {
+        semgrep:  'shared/semgrep/.semgrepignore',
+        psalm:    "shared/psalm/userspice-baseline.xml (<ignoreFiles>)",
+        gitleaks: 'shared/gitleaks/.gitleaks.toml (allowlist.paths)',
+        trivy:    'shared/trivy/.trivyignore',
+        phpstan:  'neon excludePaths (generated)',
+        zap:      'shared/zap/rules.tsv',
+    };
+    return { label: hit.label, configFile: configByTool[tool] || 'the tool\'s ignore config' };
+}
+
 function openSuppressModal(finding, file, project, scope = 'exact') {
     const existing = document.getElementById('suppress-modal');
     if (existing) existing.remove();
@@ -1164,9 +1222,13 @@ function openSuppressModal(finding, file, project, scope = 'exact') {
     const rule = finding.rule || '';
     const scopeLabels = {
         exact: `This specific finding (${file}:${finding.line})`,
-        file: `All "${rule}" findings in ${file}`,
-        rule: `All "${rule}" findings everywhere`,
+        file:  `All "${rule}" findings in ${file}`,
+        rule:  `All "${rule}" findings everywhere`,
+        glob:  `All "${rule}" findings matching ${file}`,
+        path:  `ALL ${tool} findings (every rule) matching ${file}`,
     };
+    const hint = (scope === 'glob' || scope === 'file' || scope === 'path') ? noisyPathHint(file, tool) : null;
+    const isBroad = scope === 'path';
 
     const overlay = el('div', { className: 'modal-overlay open', id: 'suppress-modal', onClick: (e) => {
         if (e.target === overlay) overlay.remove();
@@ -1175,6 +1237,18 @@ function openSuppressModal(finding, file, project, scope = 'exact') {
             el('h2', { textContent: 'Suppress Finding', style: 'margin-bottom: 0.5rem;' }),
             el('p', { style: 'font-size: 0.8rem; color: var(--text-muted); margin-bottom: 1rem;',
                 textContent: scopeLabels[scope] || scopeLabels.exact }),
+            isBroad ? el('div', {
+                style: 'font-size: 0.8rem; padding: 0.6rem 0.75rem; margin-bottom: 1rem; border-left: 3px solid var(--red, #f85149); background: rgba(248,81,73,0.08); border-radius: 3px;',
+                innerHTML: `<strong>⚠ Broad suppression:</strong> This silences <em>every</em> ${tool} rule under this path, including ones you haven't seen yet. ` +
+                    `New vulnerabilities dropped into this folder will not be flagged. Prefer narrower scopes unless this is definitely vendor/demo/generated code.`,
+            }) : null,
+            hint ? el('div', {
+                style: 'font-size: 0.8rem; padding: 0.6rem 0.75rem; margin-bottom: 1rem; border-left: 3px solid var(--yellow, #d29922); background: rgba(210,153,34,0.08); border-radius: 3px;',
+                innerHTML: `<strong>Tip:</strong> This looks like ${hint.label}. ` +
+                    `Path exclusion via <code>${hint.configFile}</code> is usually better than per-rule suppression — ` +
+                    `the tool skips the path entirely instead of scanning and then filtering.` +
+                    (isBroad ? '' : ' Suppress here only if you still want the tool to look at these files for <em>other</em> rules.'),
+            }) : null,
             el('div', { className: 'form-group' }, [
                 el('label', { textContent: 'Disposition' }),
                 el('select', { id: 'suppress-disposition' }, [
@@ -1195,7 +1269,11 @@ function openSuppressModal(finding, file, project, scope = 'exact') {
                     const reason = document.getElementById('suppress-reason').value.trim();
 
                     const body = {
-                        tool, rule, file, line: finding.line || 0,
+                        tool,
+                        // For `path` scope the rule is a wildcard — the matcher ignores it,
+                        // but we store '*' so the entry is readable and the API's rule-required check passes.
+                        rule: scope === 'path' ? '*' : rule,
+                        file, line: finding.line || 0,
                         scope, disposition, reason,
                     };
 

@@ -129,7 +129,8 @@ The file [shared/suppressions.json](shared/suppressions.json) and per-project `o
   - **exact** — matches on `tool + rule + file + content_hash` (falls back to `tool + rule + file + line`)
   - **file** — suppresses all findings of that rule in that file
   - **rule** — suppresses all findings of that rule everywhere
-  - **glob** — `file` is treated as a glob pattern (e.g. `users/admin.php`, `users/admin_*.php`, `usersc/plugins/*/views/*.php`). Pre-expanded against the project's file list at suppression time for O(1) matching.
+  - **glob** — `file` is treated as a glob pattern. `*` matches a single path segment (no `/`); `**` matches any depth. Examples: `users/admin_*.php` (flat), `vendor/**` (folder + subfolders), `usersc/plugins/*/views/*.php` (one-deep plugin dirs). Pre-expanded against the project's file list at suppression time for O(1) matching.
+  - **path** — like `glob` but wildcards the rule too. Stores `rule: "*"` and suppresses **every** finding for the given tool under the matching path. Use sparingly — it silences rules you haven't seen yet. Better for vendor/demo/generated code than per-rule suppressions; better still is excluding the path in the tool's own ignore config (`.semgrepignore`, `.gitleaksignore`, etc).
 - `reason` — why this finding is suppressed
 
 **Matching uses `content_hash`**, not line numbers. This means suppression entries survive code being added above them — the hash matches the actual code content, not its position. Falls back to `tool + rule + file + line` for entries without a content hash.
