@@ -2,6 +2,27 @@
 require_once __DIR__ . '/helpers.php';
 if (session_status() === PHP_SESSION_NONE) session_start();
 
+// VirtualBox/VM first-boot gate: if the firstboot service hasn't finished, show a waiting page
+$firstboot_flag = '/var/lib/userspice-firstboot.done';
+$firstboot_creds_file = dirname(__DIR__) . '/.firstboot-credentials.json';
+$is_firstboot_pending = file_exists('/etc/systemd/system/userspice-firstboot.service') && !file_exists($firstboot_flag);
+$firstboot_creds = null;
+
+// Check if we need to show credentials (one-time display after first boot)
+if (!$is_firstboot_pending && file_exists($firstboot_creds_file)) {
+    $creds_json = @file_get_contents($firstboot_creds_file);
+    if ($creds_json) {
+        $firstboot_creds = @json_decode($creds_json, true);
+        // Mark as shown after this page load
+        if ($firstboot_creds && isset($firstboot_creds['shown']) && $firstboot_creds['shown'] === false) {
+            $firstboot_creds['shown'] = true;
+            @file_put_contents($firstboot_creds_file, json_encode($firstboot_creds, JSON_PRETTY_PRINT));
+        } else {
+            $firstboot_creds = null; // Already shown, don't display again
+        }
+    }
+}
+
 $authenticated = is_authenticated();
 $has_password = has_password();
 ?>
@@ -29,7 +50,79 @@ $has_password = has_password();
 </head>
 <body>
 
-<?php if (!$has_password): ?>
+<?php if ($is_firstboot_pending): ?>
+<!-- First-boot in progress: Docker images being pulled -->
+<style>
+    .firstboot-page { max-width: 500px; margin: 4rem auto; text-align: center; padding: 2rem; }
+    .firstboot-page h1 { font-size: 1.5rem; margin-bottom: 1rem; }
+    .firstboot-page p { color: var(--text-muted); font-size: 0.9rem; margin-bottom: 1rem; }
+    .spinner { width: 48px; height: 48px; border: 4px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: spin 1s linear infinite; margin: 2rem auto; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .firstboot-note { background: var(--bg-card); border: 1px solid var(--border); border-radius: 8px; padding: 1rem; margin-top: 2rem; text-align: left; font-size: 0.85rem; }
+    .firstboot-note code { background: var(--bg); padding: 0.2em 0.4em; border-radius: 3px; }
+</style>
+<meta http-equiv="refresh" content="15">
+<div class="firstboot-page">
+    <h1>Setting Up Scanner...</h1>
+    <div class="spinner"></div>
+    <p>First-boot setup is in progress. This typically takes 5-10 minutes.</p>
+    <p>The page will automatically refresh when ready.</p>
+    <div class="firstboot-note">
+        <strong>What's happening:</strong>
+        <ul style="margin: 0.5rem 0 0 1.5rem; padding: 0;">
+            <li>Generating unique passwords</li>
+            <li>Pulling Docker scanner images (~4GB)</li>
+            <li>Configuring services</li>
+        </ul>
+        <p style="margin-top: 1rem; margin-bottom: 0;">
+            You can also check progress via SSH:<br>
+            <code>journalctl -fu userspice-firstboot</code>
+        </p>
+    </div>
+</div>
+
+<?php elseif ($firstboot_creds && isset($firstboot_creds['root_pw'])): ?>
+<!-- First-boot complete: Show credentials once -->
+<style>
+    .creds-page { max-width: 550px; margin: 3rem auto; padding: 1.5rem; }
+    .creds-page h1 { font-size: 1.4rem; margin-bottom: 0.5rem; color: var(--green); }
+    .creds-page .subtitle { color: var(--text-muted); font-size: 0.9rem; margin-bottom: 1.5rem; }
+    .creds-box { background: var(--bg-card); border: 1px solid var(--border); border-radius: 8px; padding: 1.25rem; margin-bottom: 1rem; }
+    .creds-box h3 { font-size: 0.9rem; margin: 0 0 0.75rem 0; color: var(--text-muted); }
+    .creds-row { display: flex; justify-content: space-between; padding: 0.4rem 0; font-size: 0.9rem; }
+    .creds-row .label { color: var(--text-muted); }
+    .creds-row .value { font-family: monospace; font-weight: 600; }
+    .creds-warning { background: rgba(234, 179, 8, 0.1); border: 1px solid var(--yellow); border-radius: 8px; padding: 1rem; margin-bottom: 1.5rem; font-size: 0.85rem; }
+    .creds-warning strong { color: var(--yellow); }
+    .creds-continue { text-align: center; margin-top: 1.5rem; }
+</style>
+<div class="creds-page">
+    <h1>Setup Complete!</h1>
+    <p class="subtitle">Your scanner VM is ready. Here are your generated credentials:</p>
+
+    <div class="creds-warning">
+        <strong>Save these credentials now!</strong> They will not be shown again.<br>
+        A backup is also saved at <code>/var/lib/userspice-firstboot-creds.txt</code>
+    </div>
+
+    <div class="creds-box">
+        <h3>SSH / System Access</h3>
+        <div class="creds-row"><span class="label">Username:</span> <span class="value">root</span></div>
+        <div class="creds-row"><span class="label">Password:</span> <span class="value"><?= htmlspecialchars($firstboot_creds['root_pw']) ?></span></div>
+    </div>
+
+    <div class="creds-box">
+        <h3>MariaDB / phpMyAdmin / Tiny File Manager</h3>
+        <div class="creds-row"><span class="label">Username:</span> <span class="value">root</span> <span style="color: var(--text-muted);">(or admin for TFM)</span></div>
+        <div class="creds-row"><span class="label">Password:</span> <span class="value"><?= htmlspecialchars($firstboot_creds['mysql_pw']) ?></span></div>
+    </div>
+
+    <div class="creds-continue">
+        <a href="?" class="btn btn-primary">Continue to Scanner Setup</a>
+    </div>
+</div>
+
+<?php elseif (!$has_password): ?>
 <!-- First-run: Set a password (no password exists yet; setup form gates everything) -->
 <div class="auth-page">
     <h1>Welcome to UserSpice Security Scanner</h1>

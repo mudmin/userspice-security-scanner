@@ -76,7 +76,7 @@ run_zap() {
     # ---- Authentication bootstrap ----
     # Auto-login (file-drop) is preferred. Form-based curl is the fallback.
     local auth_cookie=""
-    if [[ -n "$zap_uid" ]]; then
+    if [[ -n "$zap_uid" && "$zap_uid" != "0" ]]; then
         log_info "Auto-login: bootstrapping session for user id ${zap_uid}"
         auth_cookie=$(bootstrap_userspice_session_via_drop "$target_url" "$project_dir" "$zap_uid" "$report_dir")
         if [[ -n "$auth_cookie" ]]; then

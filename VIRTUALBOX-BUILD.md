@@ -41,9 +41,41 @@ The user-facing cost is "first boot takes ~10 minutes to pull images." That's hi
 
 ---
 
+## Quick Start (Scripted)
+
+We have helper scripts in `virtualbox/` that automate most of the process:
+
+```batch
+REM 1. Create the VM with correct settings
+virtualbox\create-vm.bat "C:\path\to\ubuntu-24.04-live-server-amd64.iso"
+
+REM 2. Start and install Ubuntu manually (see Step 2 below for settings)
+VBoxManage startvm userspice-scanner-build
+
+REM 3. After Ubuntu install, SSH in and run the installer
+ssh -p 2222 scanner@localhost
+sudo -i
+bash -c "$(wget -qO - https://raw.githubusercontent.com/mudmin/userspice-security-scanner/main/virtualbox/install.sh)"
+
+REM 4. Run sysprep (cleans logs, zeros disk, shuts down)
+bash -c "$(wget -qO - https://raw.githubusercontent.com/mudmin/userspice-security-scanner/main/virtualbox/sysprep.sh)"
+
+REM 5. Export to OVA (run from Windows after VM shuts down)
+virtualbox\export-ova.bat
+```
+
+Or follow the detailed manual steps below.
+
+---
+
 ## Step 1: Create the VM in VirtualBox
 
-In the VirtualBox GUI, click **New** and configure:
+**Option A: Use the script**
+```batch
+virtualbox\create-vm.bat "C:\path\to\ubuntu-24.04-live-server-amd64.iso"
+```
+
+**Option B: Manual** — In the VirtualBox GUI, click **New** and configure:
 
 - [ ] **Name:** `userspice-scanner-build`
 - [ ] **Type:** Linux
@@ -301,19 +333,20 @@ Or via the R2 web dashboard (drag & drop). Either way:
 
 ---
 
-## Files to write before the next build
+## Files included in virtualbox/
 
-These don't exist yet. They should be written in this repo before the VM build, so they're available to clone/curl from inside the VM:
+These files are ready to use:
 
-1. **`virtualbox/install.sh`** — headless installer. Refactor of the inside-the-LXC portion of [proxmox/install-lxc.sh](proxmox/install-lxc.sh) — remove all `pct` calls, drop the LXC-specific stuff, add locale generation. Should be runnable as `sudo bash install.sh` on a fresh Ubuntu 24 server VM.
+| File | Purpose |
+|------|---------|
+| `virtualbox/install.sh` | Headless installer — LAMP, Docker, phpMyAdmin, TFM, scanner, first-boot service. Run with `sudo bash install.sh` on a fresh Ubuntu 24 server VM. |
+| `virtualbox/firstboot.sh` | First-boot script — generates passwords, pulls Docker images, writes credentials. Installed to `/usr/local/sbin/userspice-firstboot.sh` by install.sh. |
+| `virtualbox/userspice-firstboot.service` | Systemd unit — runs firstboot.sh once on first boot. |
+| `virtualbox/sysprep.sh` | Pre-export cleanup — clears logs, zeros disk, shuts down. Run before exporting OVA. |
+| `virtualbox/create-vm.bat` | Windows script — creates VM with correct settings, attaches ISO. |
+| `virtualbox/export-ova.bat` | Windows script — compacts VDI, exports to OVA with metadata. |
 
-2. **`virtualbox/firstboot.sh`** — the first-boot script outlined in Step 4.
-
-3. **`virtualbox/userspice-firstboot.service`** — the systemd unit file from Step 4.
-
-4. **`ui/index.php` first-boot gate** — small PHP block above the auth check that renders a "setting up" page if `/var/lib/userspice-firstboot.done` doesn't exist.
-
-When you're ready, ask me to write these and I'll add them to `virtualbox/` and update the sync allowlist.
+The `ui/index.php` first-boot gate is already implemented — it shows a "Setting up..." spinner while first-boot runs, then displays credentials once.
 
 ---
 

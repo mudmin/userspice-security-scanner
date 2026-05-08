@@ -922,7 +922,7 @@ function openScanModal(project, prevOpts) {
                     el('label', { textContent: 'User ID to scan as' }),
                     el('input', { type: 'text', id: 'scan-zap-uid', value: o.zap_uid || '', placeholder: 'e.g. 2', inputMode: 'numeric', pattern: '[0-9]*', autocomplete: 'off' }),
                     el('small', { style: 'color: var(--text-muted); font-size: 0.75rem; display: block; margin-top: 0.35rem;',
-                        innerHTML: '<strong>How this works:</strong> instead of fighting the login form (which keeps breaking on rewrites, MFA, plugins), the scanner drops a one-shot, token-protected PHP file at your project root (<code>zap-bootstrap-&lt;random&gt;.php</code>). It calls <code>users/init.php</code>, sets the session for this user id, and self-deletes on first request. The scanner also sweeps any leftovers when the scan ends. Leave blank to scan as anonymous. Requires the project dir to be writable by the scanner user.',
+                        innerHTML: '<strong>How this works:</strong> instead of fighting the login form (which keeps breaking on rewrites, MFA, plugins), the scanner drops a one-shot, token-protected PHP file at your project root (<code>zap-bootstrap-&lt;random&gt;.php</code>). It calls <code>users/init.php</code>, sets the session for this user id, and self-deletes on first request. The scanner also sweeps any leftovers when the scan ends. Leave blank or enter <code>0</code> to scan as anonymous. Requires the project dir to be writable by the scanner user.',
                     }),
                 ]),
                 el('details', { style: 'margin-bottom: 0.75rem; font-size: 0.85rem;' }, [
@@ -1687,7 +1687,8 @@ function getScanTypeLabel(opts, totals) {
         if (opts && opts.only) return { label: opts.only, cls: 'severity-info' };
         return { label: 'Static', cls: 'severity-info' };
     }
-    const auth = (opts?.zap_uid || opts?.zap_user) ? ' + Auth' : '';
+    const authedUid = opts?.zap_uid && opts.zap_uid !== '0';
+    const auth = (authedUid || opts?.zap_user) ? ' + Auth' : '';
     if (hasZap || opts?.url) return { label: `Full${auth}`, cls: auth ? 'severity-high' : 'severity-medium' };
     return { label: 'Static', cls: 'severity-info' };
 }
