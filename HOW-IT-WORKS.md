@@ -64,7 +64,9 @@ For automated testing, custom scripts, or CI/CD integration, the full CLI is ava
 ./scan.sh myproject                                        # Static scan
 ./scan.sh myproject --url http://localhost/myproject/       # Static + ZAP + headers
 ./scan.sh myproject --url http://localhost/myproject/ \
-    --zap-user testuser --zap-pass password                # Authenticated ZAP crawl
+    --zap-uid 2                                            # Authenticated ZAP crawl (auto-login as user id 2)
+./scan.sh myproject --url http://localhost/myproject/ \
+    --zap-user testuser --zap-pass password                # Authenticated ZAP crawl (form-based fallback)
 ./scan.sh myproject --zap-profile quick --url http://...   # Passive-only ZAP scan (~3 min, safe for any env)
 ./scan.sh myproject --zap-profile deep --url http://...    # Full active scan + Ajax spider (up to ~60 min, local only)
 ./scan.sh myproject --only semgrep                         # Single tool
@@ -235,6 +237,15 @@ Data comes from historical `summary.json` files (up to 50 most recent scans).
 
 ZAP scans your running application over HTTP. Requires `--url`.
 
+> **⚠ Run ZAP against a COPY of your site. You have been warned.**
+>
+> - ZAP creates test users via `join.php`, fills every form with garbage, and triggers every endpoint it can find.
+> - It generates a **stupid number of log lines** — often 100k+ requests on a deep scan. If your stack ships logs to a paid backend, you'll notice on the bill.
+> - **If you give it an admin user id, it will walk through every admin page and wreck your site** — deleting users, dropping pages, mangling settings, hitting destructive admin actions ZAP has no idea are destructive. Use a dedicated non-admin test account.
+> - Active scans probe for SQLi, RCE, path traversal, etc. against every URL — they trip WAFs, fail2ban, Cloudflare, and may break things in unexpected ways.
+>
+> Make a clone (`rsync` the files, dump+load the DB into a separate database), point ZAP at the clone, throw the clone away when you're done.
+
 ### Profiles
 
 | Profile | Spider | Active scan | Wall time | Safe for |
@@ -269,14 +280,39 @@ If the port isn't discovered yet, it prints `ZAP [Xs] starting up...` so the sca
 
 ### Authenticated Scanning
 
-Pass `--zap-user` and `--zap-pass` to let ZAP crawl pages behind login. The scanner bootstraps a UserSpice session (GET login page, extract CSRF token, POST credentials) and injects the session cookie into ZAP via the `replacer` add-on (matching on the `Cookie` request header). Use a **non-admin test account**. Use `--zap-login` to specify a custom login path if the app doesn't use the default.
+Two paths. The first is the recommended one and is dramatically more reliable.
+
+#### 1. Auto-login via temporary bootstrap file (recommended)
+
+Pass `--zap-uid <id>` to scan as a specific UserSpice user without touching the login form at all. The scanner:
+
+1. Generates a 32-hex random token.
+2. Writes `<project>/zap-bootstrap-<token>.php` containing token-checked PHP that calls `users/init.php`, sets `$_SESSION[Config::get('session/session_name')] = <uid>`, then `unlink()`s itself before redirecting to `$us_url_root`.
+3. `curl`-fetches the file once with `?t=<token>&uid=<id>` to capture `PHPSESSID`.
+4. Injects `PHPSESSID` into ZAP via the `replacer` add-on (matching the `Cookie` request header).
+
+The bootstrap file is **single-use**: a wrong/missing token returns 403 and the file unlinks itself. The scanner also runs `rm -f zap-bootstrap-*.php` at the end of every ZAP run as belt-and-suspenders cleanup.
+
+```bash
+./scan.sh myproject --url http://localhost/myproject/ --zap-uid 2
+```
+
+Why a temp file? Authenticated DAST has been an unreliable mess for years — login forms break on URL rewrites, MFA, custom login flows, plugins, captcha, force-SSL on localhost. Skipping the form entirely is foolproof. The cost is one short-lived PHP file in your project's webroot, which is why **you should be running ZAP against a copy of your site** (see callout above).
+
+Requirements: project dir writable by whoever runs `scan.sh`, and `users/init.php` must exist (UserSpice).
+
+> **Note:** This is the one place the scanner deliberately writes into the target project directory. Every other tool stays out. The file is single-use, token-protected, and self-deleting.
+
+#### 2. Form-based login (fallback)
+
+For non-UserSpice apps or when the project dir isn't writable. Pass `--zap-user`, `--zap-pass`, and optionally `--zap-login` for a custom login path. The scanner GETs the login page, extracts the CSRF token, POSTs the credentials, and captures `PHPSESSID` the same way as auto-login.
 
 ```bash
 ./scan.sh myproject --url http://localhost/myproject/ --zap-user testuser --zap-pass testpass
 ./scan.sh myproject --url http://localhost/myproject/ --zap-user testuser --zap-pass testpass --zap-login users/login.php
 ```
 
-The web UI has username/password fields in the scan modal for this.
+Use a **non-admin test account**. The web UI has both options — auto-login is the primary field, form-based login is collapsed under "Use form-based login instead (legacy)".
 
 ### ZAP Noise Suppression
 

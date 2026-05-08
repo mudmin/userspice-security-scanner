@@ -251,7 +251,7 @@ function is_scanning(string $project): bool {
  * Start a scan for a project in the background.
  * Returns the PID or false on failure.
  */
-function start_scan(string $project, string $url = '', string $zap_profile = 'standard', string $zap_user = '', string $zap_pass = '', string $skip = '', string $zap_login = '', string $include = ''): int|false {
+function start_scan(string $project, string $url = '', string $zap_profile = 'standard', string $zap_user = '', string $zap_pass = '', string $skip = '', string $zap_login = '', string $include = '', string $zap_uid = ''): int|false {
     $project = sanitize_project($project);
     if (!project_exists($project)) return false;
     if (is_scanning($project)) return false;
@@ -266,7 +266,10 @@ function start_scan(string $project, string $url = '', string $zap_profile = 'st
         $cmd .= ' --url ' . escapeshellarg($url);
         $cmd .= ' --zap-profile ' . escapeshellarg($zap_profile);
     }
-    if ($zap_user !== '' && $zap_pass !== '') {
+    // Auto-login takes precedence over form-based login
+    if ($zap_uid !== '' && ctype_digit($zap_uid)) {
+        $cmd .= ' --zap-uid ' . escapeshellarg($zap_uid);
+    } elseif ($zap_user !== '' && $zap_pass !== '') {
         $cmd .= ' --zap-user ' . escapeshellarg($zap_user);
         $cmd .= ' --zap-pass ' . escapeshellarg($zap_pass);
     }

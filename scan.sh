@@ -16,6 +16,8 @@ set -uo pipefail
 #   ./scan.sh <project> --include phpstan  Include opt-in tools (comma-separated)
 #   ./scan.sh <project> --url <url>      Target URL for ZAP + header checks
 #   ./scan.sh <project> --zap-profile quick|standard|deep   ZAP scan profile (default: standard)
+#   ./scan.sh <project> --zap-uid <id>   Auto-login as user id (drops one-shot bootstrap file)
+#   ./scan.sh <project> --zap-user <u> --zap-pass <p>  Form-based login (fallback)
 #   ./scan.sh <project> --pull           Pull latest Docker images before scanning
 #   ./scan.sh <project> --init           Create per-project override templates
 #   ./scan.sh <project> --prune [N]      Keep only N most recent reports (default: 5)
@@ -72,6 +74,7 @@ ZAP_PROFILE="standard"
 ZAP_USER=""
 ZAP_PASS=""
 ZAP_LOGIN_PATH=""
+ZAP_UID=""
 PRUNE_REPORTS=false
 PRUNE_KEEP=5
 THRESHOLD=""
@@ -95,6 +98,7 @@ while [[ $# -gt 0 ]]; do
         --zap-user)      ZAP_USER="$2"; shift 2 ;;
         --zap-pass)      ZAP_PASS="$2"; shift 2 ;;
         --zap-login)     ZAP_LOGIN_PATH="$2"; shift 2 ;;
+        --zap-uid)       ZAP_UID="$2"; shift 2 ;;
         --prune)         PRUNE_REPORTS=true
                          if [[ "${2:-}" =~ ^[0-9]+$ ]]; then PRUNE_KEEP="$2"; shift; fi
                          shift ;;
@@ -241,6 +245,7 @@ cat > "${REPORT_DIR}/scan-options.json" <<OPTS
     "zap_user": $(printf '%s' "${ZAP_USER}" | jq -Rs .),
     "zap_pass": $(printf '%s' "${ZAP_PASS}" | jq -Rs .),
     "zap_login_path": $(printf '%s' "${ZAP_LOGIN_PATH}" | jq -Rs .),
+    "zap_uid": $(printf '%s' "${ZAP_UID}" | jq -Rs .),
     "only": $(printf '%s' "${ONLY_TOOL}" | jq -Rs .),
     "skip": $(printf '%s' "${SKIP_TOOLS}" | jq -Rs .),
     "include": $(printf '%s' "${INCLUDE_TOOLS}" | jq -Rs .),
@@ -282,7 +287,7 @@ run_tool phpstan run_phpstan "$PROJECT" "$PROJECT_DIR" "$REPORT_DIR"
 # ZAP requires a target URL — auto-derive or use --url
 if should_run zap; then
     local_url="${TARGET_URL:-http://localhost/${PROJECT}/}"
-    run_tool zap run_zap "$PROJECT" "$PROJECT_DIR" "$REPORT_DIR" "$local_url" "$ZAP_PROFILE" "$ZAP_USER" "$ZAP_PASS" "$ZAP_LOGIN_PATH"
+    run_tool zap run_zap "$PROJECT" "$PROJECT_DIR" "$REPORT_DIR" "$local_url" "$ZAP_PROFILE" "$ZAP_USER" "$ZAP_PASS" "$ZAP_LOGIN_PATH" "$ZAP_UID"
 else
     TOOL_STATUS[zap]="skipped"
 fi

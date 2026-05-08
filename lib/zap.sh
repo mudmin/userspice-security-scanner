@@ -3,13 +3,23 @@
 # Handles: runtime HTTP vulnerability scanning (DAST)
 #
 # Profiles:
-#   standard — baseline scan, ~2-5 min crawl (default)
-#   deep     — full scan with Ajax spider, ~15 min
+#   quick    — baseline scan, passive only, ~3 min
+#   standard — full scan with spider 5m + ascan 10m cap, ~15 min total (default)
+#   deep     — full scan with spider 15m + Ajax + ascan 45m cap, up to ~60 min
 #
-# Authentication:
-#   If --zap-user and --zap-pass are provided, bootstraps a UserSpice
-#   session via curl (GET login → extract CSRF → POST login) and injects
-#   the session cookie into ZAP via the replacer add-on.
+# Authentication (two paths):
+#   1. AUTO-LOGIN (preferred):  --zap-uid <N>
+#      Drops a one-shot, token-protected PHP file at <project>/zap-bootstrap-<token>.php
+#      that calls users/init.php and sets $_SESSION[session_name] = uid. Curl-fetches
+#      it once to capture PHPSESSID, then injects via ZAP's replacer. The PHP file
+#      self-deletes on its first request and 403+deletes on bad token. The scanner
+#      also `rm -f`s any leftovers at the end of run_zap as a belt-and-suspenders
+#      cleanup. Requires the project dir to be writable by whoever runs scan.sh.
+#
+#   2. FORM-BASED FALLBACK:     --zap-user / --zap-pass / --zap-login
+#      Curl-bootstraps via the actual login form (GET → extract CSRF → POST creds).
+#      Brittle against rewrites, MFA, and custom login flows — kept for staging
+#      environments and non-UserSpice apps where auto-login isn't usable.
 
 run_zap() {
     local project="$1"
@@ -20,6 +30,7 @@ run_zap() {
     local zap_user="${6:-}"
     local zap_pass="${7:-}"
     local zap_login_path="${8:-}"
+    local zap_uid="${9:-}"
 
     log_header "OWASP ZAP — Dynamic Application Security Testing"
     local start
@@ -63,10 +74,18 @@ run_zap() {
     fi
 
     # ---- Authentication bootstrap ----
-    # ---- Authentication bootstrap ----
+    # Auto-login (file-drop) is preferred. Form-based curl is the fallback.
     local auth_cookie=""
-    if [[ -n "$zap_user" && -n "$zap_pass" ]]; then
-        log_info "Bootstrapping authenticated session for: ${zap_user}"
+    if [[ -n "$zap_uid" ]]; then
+        log_info "Auto-login: bootstrapping session for user id ${zap_uid}"
+        auth_cookie=$(bootstrap_userspice_session_via_drop "$target_url" "$project_dir" "$zap_uid" "$report_dir")
+        if [[ -n "$auth_cookie" ]]; then
+            log_success "Auto-login succeeded (uid=${zap_uid})"
+        else
+            log_warn "Auto-login failed — ZAP will scan as unauthenticated visitor"
+        fi
+    elif [[ -n "$zap_user" && -n "$zap_pass" ]]; then
+        log_info "Form-based login: bootstrapping session for ${zap_user}"
         auth_cookie=$(bootstrap_userspice_session "$target_url" "$zap_user" "$zap_pass" "$report_dir" "$zap_login_path")
         if [[ -n "$auth_cookie" ]]; then
             log_success "Authenticated session obtained"
@@ -358,6 +377,9 @@ ZAPHOOK
     [[ -f "${zap_wrk}/zap.html" ]] && mv "${zap_wrk}/zap.html" "${report_dir}/zap.html"
     rm -rf "$zap_wrk" 2>/dev/null || true
     rm -f "$cid_file"
+    # Defense in depth: remove any auto-login bootstrap files left behind
+    # (the PHP file unlinks itself but a hard kill could orphan one).
+    rm -f "${project_dir}"/zap-bootstrap-*.php 2>/dev/null || true
 
     local elapsed
     elapsed="$(timer_elapsed "$start")"
@@ -461,6 +483,119 @@ if not parts:
 
 print(' | '.join(parts))
 PYEOF
+}
+
+# Bootstrap a UserSpice login session by dropping a one-shot, token-protected
+# PHP file at <project>/zap-bootstrap-<token>.php that:
+#   1. Verifies the request carries the matching ?t=<token>; deletes itself
+#      and returns 403 otherwise.
+#   2. require_once's users/init.php and sets $_SESSION[session_name] = uid.
+#   3. unlinks itself before redirecting to us_url_root.
+# The scanner curl-fetches the file once with the right token + uid, captures
+# PHPSESSID, then deletes the file (belt-and-suspenders — it should already be
+# gone). Skips the login form entirely so MFA / CSRF / rewrites can't break it.
+#
+# Returns PHPSESSID on stdout, empty on failure. All logs go to stderr.
+bootstrap_userspice_session_via_drop() {
+    local base_url="$1"
+    local project_dir="$2"
+    local uid="$3"
+    local report_dir="$4"
+
+    if [[ ! -d "$project_dir" ]]; then
+        log_warn "Project dir does not exist: ${project_dir}" >&2
+        return 1
+    fi
+    if [[ ! -f "${project_dir}/users/init.php" ]]; then
+        log_warn "Auto-login requires UserSpice (no users/init.php in ${project_dir})" >&2
+        return 1
+    fi
+    if [[ ! -w "$project_dir" ]]; then
+        log_warn "Auto-login needs ${project_dir} writable by $(whoami) — falling back to anonymous" >&2
+        return 1
+    fi
+    if [[ -z "$uid" || ! "$uid" =~ ^[0-9]+$ ]]; then
+        log_warn "Invalid uid for auto-login: '${uid}'" >&2
+        return 1
+    fi
+
+    local token
+    token=$(openssl rand -hex 16 2>/dev/null \
+        || head -c 32 /dev/urandom | xxd -p 2>/dev/null | tr -d '\n')
+    if [[ -z "$token" ]]; then
+        log_warn "Could not generate auto-login token (no openssl/xxd)" >&2
+        return 1
+    fi
+
+    local file="${project_dir}/zap-bootstrap-${token}.php"
+    cat > "$file" <<PHPEOF
+<?php
+// One-shot ZAP login bootstrap. Self-deletes on first request.
+if (!isset(\$_GET['t']) || !hash_equals('${token}', \$_GET['t'])) {
+    @unlink(__FILE__);
+    http_response_code(403);
+    exit('expired');
+}
+require_once __DIR__ . '/users/init.php';
+\$_SESSION[Config::get('session/session_name')] = (int)(\$_GET['uid'] ?? 0);
+@unlink(__FILE__);
+header('Location: ' . \$us_url_root);
+exit;
+PHPEOF
+    chmod 644 "$file" 2>/dev/null
+
+    local cookie_jar="${report_dir}/.zap-auth-cookies"
+    local result http_code final_url
+    result=$(curl -sL -c "$cookie_jar" -o /dev/null \
+        -w '%{http_code} %{url_effective}' \
+        "${base_url}zap-bootstrap-${token}.php?t=${token}&uid=${uid}" 2>/dev/null) \
+        || result="000 -"
+    http_code="${result%% *}"
+    final_url="${result#* }"
+
+    # Belt-and-suspenders cleanup; PHP self-unlink should already have run
+    rm -f "$file"
+
+    if [[ "$http_code" != "200" && "$http_code" != "302" && "$http_code" != "303" ]]; then
+        log_warn "Auto-login fetch failed (HTTP ${http_code}, final: ${final_url})" >&2
+        rm -f "$cookie_jar"
+        return 1
+    fi
+
+    local session_id
+    session_id=$(grep -P '\tPHPSESSID\t' "$cookie_jar" 2>/dev/null | awk '{print $NF}')
+    if [[ -z "$session_id" ]]; then
+        log_warn "Auto-login produced no PHPSESSID cookie" >&2
+        rm -f "$cookie_jar"
+        return 1
+    fi
+
+    # Verify by hitting account.php — same check as form-based path
+    local verify_result verify_code verify_final_url
+    verify_result=$(curl -sL -o /dev/null -w '%{http_code} %{url_effective}' \
+        -b "PHPSESSID=${session_id}" "${base_url}users/account.php" 2>/dev/null) \
+        || verify_result="000 -"
+    verify_code="${verify_result%% *}"
+    verify_final_url="${verify_result#* }"
+
+    if [[ "$verify_code" != "200" ]] || echo "$verify_final_url" | grep -qi 'login'; then
+        log_warn "Auto-login verification failed (account.php → HTTP ${verify_code}, final: ${verify_final_url})" >&2
+        log_warn "Make sure user id ${uid} exists and is not locked/disabled" >&2
+        rm -f "$cookie_jar"
+        return 1
+    fi
+
+    log_info "Auto-login verified (uid=${uid}, final: ${verify_final_url})" >&2
+
+    echo "${session_id}" > "${report_dir}/.zap-auth-session"
+    {
+        echo "method=auto-login"
+        echo "uid=${uid}"
+        echo "verified=true"
+    } > "${report_dir}/.zap-auth-info"
+
+    rm -f "$cookie_jar"
+    echo "$session_id"
 }
 
 # Bootstrap a UserSpice login session via curl.

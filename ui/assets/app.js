@@ -903,27 +903,48 @@ function openScanModal(project, prevOpts) {
 
             // ZAP settings — disabled when ZAP is unchecked
             el('div', { id: 'zap-settings' }, [
+                el('div', {
+                    style: 'font-size: 0.8rem; padding: 0.6rem 0.75rem; margin-bottom: 0.75rem; border-left: 3px solid var(--red, #f85149); background: rgba(248,81,73,0.08); border-radius: 3px;',
+                    innerHTML: '<strong>⚠ Run ZAP against a COPY of your site.</strong> ZAP creates test users, fills forms with garbage, and triggers every endpoint it can find. ' +
+                        '<strong>It also generates a stupid number of log lines</strong> (often 100k+ requests on a deep scan) — if your stack ships logs to a paid backend, you will notice. ' +
+                        '<strong>If you give it an admin user id, it will happily walk through every admin page and wreck your site</strong> — deleting users, dropping pages, mangling settings. Use a non-admin test user. ' +
+                        'Make a clone (rsync the files, dump+load the DB), point ZAP at the clone, and throw the clone away when you\'re done. ' +
+                        '<strong>You have been warned.</strong>',
+                }),
                 el('div', { className: 'form-group' }, [
                     el('label', { textContent: 'Target URL (enables ZAP + header checks)' }),
                     el('input', { type: 'text', id: 'scan-url', value: o.url || `http://localhost/${project}/` }),
                 ]),
                 el('div', { style: 'border-top: 1px solid var(--border); margin: 0.75rem 0; padding-top: 0.75rem;' }, [
-                    el('label', { style: 'font-size: 0.8rem; color: var(--text-muted); display: block; margin-bottom: 0.5rem;', textContent: 'ZAP Authentication (optional — lets ZAP crawl behind login)' }),
-                ]),
-                el('div', { style: 'display: grid; grid-template-columns: 1fr 1fr; gap: 0.75rem;' }, [
-                    el('div', { className: 'form-group' }, [
-                        el('label', { textContent: 'Username' }),
-                        el('input', { type: 'text', id: 'scan-zap-user', value: o.zap_user || '', placeholder: 'test_user', autocomplete: 'off' }),
-                    ]),
-                    el('div', { className: 'form-group' }, [
-                        el('label', { textContent: 'Password' }),
-                        el('input', { type: 'text', id: 'scan-zap-pass', value: o.zap_pass || '', placeholder: 'password', autocomplete: 'off' }),
-                    ]),
+                    el('label', { style: 'font-size: 0.8rem; color: var(--text-muted); display: block; margin-bottom: 0.5rem;', textContent: 'Auto-Login (optional — lets ZAP crawl behind login)' }),
                 ]),
                 el('div', { className: 'form-group' }, [
-                    el('label', { textContent: 'Login URL Path' }),
-                    el('input', { type: 'text', id: 'scan-zap-login', value: o.zap_login_path || 'users/login.php', autocomplete: 'off' }),
-                    el('small', { style: 'color: var(--text-muted); font-size: 0.75rem;', textContent: 'Relative to project URL. Default: users/login.php' }),
+                    el('label', { textContent: 'User ID to scan as' }),
+                    el('input', { type: 'text', id: 'scan-zap-uid', value: o.zap_uid || '', placeholder: 'e.g. 2', inputMode: 'numeric', pattern: '[0-9]*', autocomplete: 'off' }),
+                    el('small', { style: 'color: var(--text-muted); font-size: 0.75rem; display: block; margin-top: 0.35rem;',
+                        innerHTML: '<strong>How this works:</strong> instead of fighting the login form (which keeps breaking on rewrites, MFA, plugins), the scanner drops a one-shot, token-protected PHP file at your project root (<code>zap-bootstrap-&lt;random&gt;.php</code>). It calls <code>users/init.php</code>, sets the session for this user id, and self-deletes on first request. The scanner also sweeps any leftovers when the scan ends. Leave blank to scan as anonymous. Requires the project dir to be writable by the scanner user.',
+                    }),
+                ]),
+                el('details', { style: 'margin-bottom: 0.75rem; font-size: 0.85rem;' }, [
+                    el('summary', { style: 'cursor: pointer; color: var(--text-muted);', textContent: 'Use form-based login instead (legacy)' }),
+                    el('div', { style: 'padding-top: 0.5rem;' }, [
+                        el('p', { style: 'font-size: 0.75rem; color: var(--text-muted); margin-bottom: 0.5rem;', textContent: 'For non-UserSpice apps or when the project dir isn\'t writable. Brittle against MFA, custom login flows, and URL rewrites.' }),
+                        el('div', { style: 'display: grid; grid-template-columns: 1fr 1fr; gap: 0.75rem;' }, [
+                            el('div', { className: 'form-group' }, [
+                                el('label', { textContent: 'Username' }),
+                                el('input', { type: 'text', id: 'scan-zap-user', value: o.zap_user || '', placeholder: 'test_user', autocomplete: 'off' }),
+                            ]),
+                            el('div', { className: 'form-group' }, [
+                                el('label', { textContent: 'Password' }),
+                                el('input', { type: 'text', id: 'scan-zap-pass', value: o.zap_pass || '', placeholder: 'password', autocomplete: 'off' }),
+                            ]),
+                        ]),
+                        el('div', { className: 'form-group' }, [
+                            el('label', { textContent: 'Login URL Path' }),
+                            el('input', { type: 'text', id: 'scan-zap-login', value: o.zap_login_path || 'users/login.php', autocomplete: 'off' }),
+                            el('small', { style: 'color: var(--text-muted); font-size: 0.75rem;', textContent: 'Relative to project URL. Default: users/login.php' }),
+                        ]),
+                    ]),
                 ]),
                 el('div', { className: 'form-group', style: 'margin-top: 0.5rem;' }, [
                     el('label', { textContent: 'Scan Depth' }),
@@ -940,8 +961,7 @@ function openScanModal(project, prevOpts) {
                 }),
                 el('p', {
                     style: 'font-size: 0.75rem; color: var(--text-muted); margin-bottom: 1rem;',
-                    innerHTML: 'We recommend creating a <strong>dedicated non-admin test user</strong> for ZAP scanning (e.g. "scanner" / "scanner123"). ' +
-                        'Credentials are stored in scan options for re-runs. ' +
+                    innerHTML: 'We recommend creating a <strong>dedicated non-admin test user</strong> on the copy and scanning as that user id. ' +
                         'If force-SSL is enabled in UserSpice, disable it for local scans.',
                 }),
             ]),
@@ -950,15 +970,20 @@ function openScanModal(project, prevOpts) {
                 el('button', { className: 'btn btn-primary', textContent: 'Start Scan', onClick: async () => {
                     const zapChecked = document.getElementById('scan-tool-zap')?.checked;
                     const url = zapChecked ? document.getElementById('scan-url').value.trim() : '';
+                    const zapUid = zapChecked ? document.getElementById('scan-zap-uid').value.trim() : '';
                     const zapUser = zapChecked ? document.getElementById('scan-zap-user').value.trim() : '';
                     const zapPass = zapChecked ? document.getElementById('scan-zap-pass').value : '';
                     const zapLogin = zapChecked ? document.getElementById('scan-zap-login').value.trim() : '';
                     const zapProfile = zapChecked ? document.getElementById('scan-zap-profile').value : 'standard';
+                    if (zapChecked && zapUid && !/^[0-9]+$/.test(zapUid)) {
+                        alert('User ID must be a positive integer (or leave blank for anonymous).');
+                        return;
+                    }
                     const skip = getSkippedTools();
                     const include = getIncludedTools();
                     if (zapChecked && !confirmActiveScanTarget(url, zapProfile)) return;
                     overlay.remove();
-                    await startScan(project, url, zapProfile, zapUser, zapPass, skip, zapLogin, include);
+                    await startScan(project, url, zapProfile, zapUser, zapPass, skip, zapLogin, include, zapUid);
                 }}),
             ]),
         ]),
@@ -971,8 +996,7 @@ function openScanModal(project, prevOpts) {
     function updateZapVisibility() {
         const enabled = zapCb?.checked;
         if (zapSettings) {
-            zapSettings.style.opacity = enabled ? '1' : '0.4';
-            zapSettings.style.pointerEvents = enabled ? '' : 'none';
+            zapSettings.style.display = enabled ? '' : 'none';
         }
     }
     zapCb?.addEventListener('change', updateZapVisibility);
@@ -1005,8 +1029,8 @@ function getIncludedTools() {
     }).join(',');
 }
 
-async function startScan(project, url, zapProfile, zapUser, zapPass, skip, zapLogin, include) {
-    const result = await apiPost('scan', { project, url, zap_profile: zapProfile, zap_user: zapUser, zap_pass: zapPass, zap_login: zapLogin || '', skip: skip || '', include: include || '' });
+async function startScan(project, url, zapProfile, zapUser, zapPass, skip, zapLogin, include, zapUid) {
+    const result = await apiPost('scan', { project, url, zap_profile: zapProfile, zap_user: zapUser, zap_pass: zapPass, zap_login: zapLogin || '', skip: skip || '', include: include || '', zap_uid: zapUid || '' });
     if (result.error) {
         alert(result.error);
         return;
@@ -1028,6 +1052,7 @@ async function startScan(project, url, zapProfile, zapUser, zapPass, skip, zapLo
 async function rerunScan(project, opts) {
     if (!confirm(`Re-run scan for ${project} with same settings?`)) return;
     const url = opts.url || '';
+    const zapUid = opts.zap_uid || '';
     const zapUser = opts.zap_user || '';
     const zapPass = opts.zap_pass || '';
     const zapLogin = opts.zap_login_path || '';
@@ -1036,7 +1061,7 @@ async function rerunScan(project, opts) {
     const include = opts.include || '';
     const zapEnabled = !(skip.split(',').map(s => s.trim()).includes('zap'));
     if (zapEnabled && !confirmActiveScanTarget(url, zapProfile)) return;
-    await startScan(project, url, zapProfile, zapUser, zapPass, skip, zapLogin, include);
+    await startScan(project, url, zapProfile, zapUser, zapPass, skip, zapLogin, include, zapUid);
 }
 
 // Returns true if the host portion of url looks like localhost / a private
@@ -1662,7 +1687,7 @@ function getScanTypeLabel(opts, totals) {
         if (opts && opts.only) return { label: opts.only, cls: 'severity-info' };
         return { label: 'Static', cls: 'severity-info' };
     }
-    const auth = opts?.zap_user ? ' + Auth' : '';
+    const auth = (opts?.zap_uid || opts?.zap_user) ? ' + Auth' : '';
     if (hasZap || opts?.url) return { label: `Full${auth}`, cls: auth ? 'severity-high' : 'severity-medium' };
     return { label: 'Static', cls: 'severity-info' };
 }

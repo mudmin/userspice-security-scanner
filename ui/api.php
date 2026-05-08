@@ -123,10 +123,12 @@ switch ($action) {
         $zap_user = trim($_POST['zap_user'] ?? '');
         $zap_pass = $_POST['zap_pass'] ?? '';
         $zap_login = trim($_POST['zap_login'] ?? '');
+        $zap_uid_raw = trim((string)($_POST['zap_uid'] ?? ''));
+        $zap_uid = ctype_digit($zap_uid_raw) ? $zap_uid_raw : '';
         $skip = preg_replace('/[^a-zA-Z0-9,]/', '', $_POST['skip'] ?? '');
         $include = preg_replace('/[^a-zA-Z0-9,]/', '', $_POST['include'] ?? '');
 
-        $pid = start_scan($project, $url, $zap_profile, $zap_user, $zap_pass, $skip, $zap_login, $include);
+        $pid = start_scan($project, $url, $zap_profile, $zap_user, $zap_pass, $skip, $zap_login, $include, $zap_uid);
         if ($pid) {
             json_response(['started' => true, 'pid' => $pid, 'project' => $project]);
         } else {
